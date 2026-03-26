@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../home/main_layout.dart';
+import '../../data/app_data.dart';
 import 'dart:math';
 
 class ProfileSetupScreen extends StatefulWidget {
@@ -10,13 +12,12 @@ class ProfileSetupScreen extends StatefulWidget {
 }
 
 class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
-  int _currentStep = 1; // 1 - Имя/Никнейм, 2 - Эмоджи
+  int _currentStep = 1; 
   
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _usernameController = TextEditingController();
   String? _selectedEmoji;
 
-  // Массив базовых эмоджи для выбора
   final List<String> _emojis = [
     '😀', '😁', '😂', '🤣', '😃', '😄', '😅', '😆', '😉', '😊', 
     '😋', '😎', '😍', '😘', '🥰', '😗', '😙', '😚', '🙂', '🤗', 
@@ -25,7 +26,8 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
     '🤤', '😒', '😓', '😔', '😕', '🙃', '🤑', '😲', '☹️', '🙁', 
     '😤', '😢', '😭', '😦', '😧', '😨', '😩', '🤯', '😬', '😰', 
     '😱', '🥵', '🥶', '😳', '🤪', '😵', '😡', '😠', '🤬', '😷', 
-    '😈', '👿', '👹', '👺', '💀', '👻', '👽', '👾', '🤖', '💩'
+    '😈', '👿', '👹', '👺', '💀', '👻', '👽', '👾', '🤖', '💩',
+    '🤡', '👾', '🚀', '⭐', '🎈', '🦊', '🐱', '🐼', '🐸', '🐢'
   ];
 
   void _nextStep() {
@@ -40,13 +42,20 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
     }
   }
 
-  void _finishSetup() {
+  void _finishSetup() async {
     if (_selectedEmoji != null) {
-      // Здесь в будущем данные будут отправляться в БД
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const MainLayout()),
-      );
+      AppData.activeClans[_selectedEmoji!] = (AppData.activeClans[_selectedEmoji!] ?? 0) + 1;
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('isLoggedIn', true);
+      await prefs.setString('userEmoji', _selectedEmoji!);
+
+      if (mounted) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => const MainLayout()),
+        );
+      }
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Выберите свой эмоджи-клан')),
@@ -124,11 +133,9 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
                 ),
                 const SizedBox(height: 30),
                 
-                // Прогресс бар (шаги)
                 _buildProgressBar(),
                 const SizedBox(height: 40),
 
-                // Меняем контент в зависимости от шага
                 _currentStep == 1 ? _buildStep1() : _buildStep2(),
               ],
             ),
@@ -137,8 +144,6 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
       ),
     );
   }
-
-  // --- ВИДЖЕТЫ ШАГОВ ---
 
   Widget _buildProgressBar() {
     return Row(
@@ -171,7 +176,10 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
         const SizedBox(height: 4),
         const Text('Как тебя будут видеть другие пользователи', style: TextStyle(color: Colors.grey, fontSize: 12)),
         const SizedBox(height: 12),
-        _buildTextField(controller: _nameController, hint: 'Иван Иванов'),
+        _buildTextField(
+          controller: _nameController, 
+          hint: 'Алмас' // <--- ОБНОВЛЕНО
+        ),
         
         const SizedBox(height: 24),
         
@@ -179,7 +187,10 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
         const SizedBox(height: 4),
         const Text('Уникальный никнейм для твоего профиля\n(латиница, цифры, и "_")', style: TextStyle(color: Colors.grey, fontSize: 12)),
         const SizedBox(height: 12),
-        _buildTextField(controller: _usernameController, hint: 'ivanov1998'),
+        _buildTextField(
+          controller: _usernameController, 
+          hint: 'zxcAlmas' // <--- ОБНОВЛЕНО
+        ),
         
         const SizedBox(height: 40),
         ElevatedButton(
@@ -208,7 +219,6 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
         ),
         const SizedBox(height: 24),
         
-        // Кнопка выбора эмоджи с кастомным пунктирным кругом
         GestureDetector(
           onTap: _showEmojiPicker,
           child: Row(
@@ -237,7 +247,7 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
         ElevatedButton(
           onPressed: () {
             setState(() {
-              _currentStep = 1; // Возврат на первый шаг
+              _currentStep = 1; 
             });
           },
           style: ElevatedButton.styleFrom(
@@ -280,7 +290,6 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
   }
 }
 
-// Кастомный рисовальщик для пунктирного круга
 class DashedCirclePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
@@ -292,7 +301,7 @@ class DashedCirclePainter extends CustomPainter {
 
     final rect = Rect.fromLTWH(0, 0, size.width, size.height);
     while (startAngle < 360) {
-      canvas.drawArc(rect, startAngle * (pi / 180), dashWidth * (pi / 180), false, paint);
+      canvas.drawArc(rect, startAngle * (3.14159 / 180), dashWidth * (3.14159 / 180), false, paint);
       startAngle += dashWidth + dashSpace;
     }
   }

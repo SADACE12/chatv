@@ -11,7 +11,6 @@ class RegisterScreen extends StatefulWidget {
 class _RegisterScreenState extends State<RegisterScreen> {
   bool _obscurePassword = true;
   
-  // Контроллеры для регистрации
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
 
@@ -26,29 +25,19 @@ class _RegisterScreenState extends State<RegisterScreen> {
     final email = _emailController.text.trim();
     final password = _passwordController.text;
 
-    // Проверки
     if (email.isEmpty || password.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Пожалуйста, заполните все поля')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Пожалуйста, заполните все поля')));
       return;
     }
-
     if (!email.contains('@') || !email.contains('.')) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Введите корректный E-Mail')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Введите корректный E-Mail')));
       return;
     }
-
     if (password.length < 10) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Пароль должен содержать минимум 10 символов')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Пароль должен содержать минимум 10 символов')));
       return;
     }
 
-    // Если всё ок — идем настраивать профиль
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(builder: (context) => const ProfileSetupScreen()),
@@ -68,58 +57,37 @@ class _RegisterScreenState extends State<RegisterScreen> {
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text(
-                  'ChatV', // Изменили название
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.blueAccent),
-                ),
+                const Text('ChatV', textAlign: TextAlign.center, style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.blueAccent)),
                 const SizedBox(height: 40),
-                const Text(
-                  'Создание аккаунта',
-                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white),
-                ),
+                const Text('Создание аккаунта', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white)),
                 const SizedBox(height: 8),
-                const Text(
-                  'Пожалуйста, введите ваши данные',
-                  style: TextStyle(color: Colors.grey, fontSize: 14),
-                ),
+                const Text('Пожалуйста, введите ваши данные', style: TextStyle(color: Colors.grey, fontSize: 14)),
                 const SizedBox(height: 30),
                 
+                // ПОЛЕ ПОЧТЫ
                 const Text('E-Mail', style: TextStyle(color: Colors.white, fontSize: 14)),
                 const SizedBox(height: 8),
-                _buildTextField(controller: _emailController, hint: 'ilya@gmail.com'),
+                _buildTextField(
+                  controller: _emailController, 
+                  hint: 'Almas@gmail.com' // <--- ВОТ ЗДЕСЬ ИСПРАВЛЕНО: Текст внутри поля
+                ),
                 
                 const SizedBox(height: 20),
+                
+                // ПОЛЕ ПАРОЛЯ
                 const Text('Пароль', style: TextStyle(color: Colors.white, fontSize: 14)),
                 const SizedBox(height: 8),
                 _buildTextField(
                   controller: _passwordController,
-                  hint: 'Минимум 10 символов',
+                  hint: 'Минимум 10 символов', // <--- ВОТ ЗДЕСЬ ВОССТАНОВЛЕНО: Текст внутри поля
                   isPassword: true,
                   obscure: _obscurePassword,
-                  onToggleVisibility: () {
-                    setState(() {
-                      _obscurePassword = !_obscurePassword;
-                    });
-                  },
+                  onToggleVisibility: () => setState(() => _obscurePassword = !_obscurePassword),
                 ),
                 
-                const SizedBox(height: 20),
-                RichText(
-                  text: const TextSpan(
-                    style: TextStyle(color: Colors.grey, fontSize: 12, height: 1.5),
-                    children: [
-                      TextSpan(text: 'Продолжая, вы соглашаетесь с '),
-                      TextSpan(text: 'условиями использования', style: TextStyle(color: Colors.blueAccent)),
-                      TextSpan(text: ' и '),
-                      TextSpan(text: 'политикой конфиденциальности', style: TextStyle(color: Colors.blueAccent)),
-                    ],
-                  ),
-                ),
-                
-                const SizedBox(height: 20),
+                const SizedBox(height: 40),
                 ElevatedButton(
-                  onPressed: _register, // Вызываем функцию валидации
+                  onPressed: _register,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.white,
                     foregroundColor: Colors.black,
@@ -148,7 +116,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
     );
   }
 
-  // Обновили виджет, чтобы он принимал контроллер
   Widget _buildTextField({required TextEditingController controller, required String hint, bool isPassword = false, bool obscure = false, VoidCallback? onToggleVisibility}) {
     return TextField(
       controller: controller,
@@ -156,7 +123,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       style: const TextStyle(color: Colors.white),
       decoration: InputDecoration(
         hintText: hint,
-        hintStyle: const TextStyle(color: Colors.white24),
+        hintStyle: const TextStyle(color: Colors.white24), // Тусклый цвет для подсказки
         filled: true,
         fillColor: const Color(0xFF1E1E1E),
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),

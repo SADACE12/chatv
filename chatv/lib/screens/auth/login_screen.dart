@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../home/main_layout.dart';
 import 'register_screen.dart';
 
@@ -12,7 +13,6 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   bool _obscurePassword = true;
   
-  // Добавили контроллеры для чтения текста
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
 
@@ -23,30 +23,29 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
-  void _login() {
+  void _login() async {
     final email = _emailController.text.trim();
     final password = _passwordController.text.trim();
 
-    // Валидация полей
     if (email.isEmpty || password.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Пожалуйста, заполните все поля')),
-      );
-      return; // Останавливаем выполнение, если есть ошибка
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Пожалуйста, заполните все поля')));
+      return;
     }
-
     if (!email.contains('@') || !email.contains('.')) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Введите корректный E-Mail')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Введите корректный E-Mail')));
       return;
     }
 
-    // Если всё ок — пускаем в ленту
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(builder: (context) => const MainLayout()),
-    );
+    // Сохраняем в память, что мы вошли
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('isLoggedIn', true);
+
+    if (mounted) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (context) => const MainLayout()),
+      );
+    }
   }
 
   @override
@@ -62,26 +61,16 @@ class _LoginScreenState extends State<LoginScreen> {
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text(
-                  'ChatV', // Изменили название
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.blueAccent),
-                ),
+                const Text('ChatV', textAlign: TextAlign.center, style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.blueAccent)),
                 const SizedBox(height: 40),
-                const Text(
-                  'Вход',
-                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white),
-                ),
+                const Text('Вход', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white)),
                 const SizedBox(height: 8),
-                const Text(
-                  'Пожалуйста, введите ваши данные',
-                  style: TextStyle(color: Colors.grey, fontSize: 14),
-                ),
+                const Text('Пожалуйста, введите ваши данные', style: TextStyle(color: Colors.grey, fontSize: 14)),
                 const SizedBox(height: 30),
                 
                 const Text('E-Mail', style: TextStyle(color: Colors.white, fontSize: 14)),
                 const SizedBox(height: 8),
-                _buildTextField(controller: _emailController, hint: 'ilya@gmail.com'),
+                _buildTextField(controller: _emailController, hint: 'Almas@gmail.com'),
                 
                 const SizedBox(height: 20),
                 const Text('Пароль', style: TextStyle(color: Colors.white, fontSize: 14)),
@@ -110,7 +99,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 
                 const SizedBox(height: 20),
                 ElevatedButton(
-                  onPressed: _login, // Вызываем нашу функцию
+                  onPressed: _login,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.white,
                     foregroundColor: Colors.black,
@@ -141,7 +130,6 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
-  // Обновили виджет, чтобы он принимал контроллер
   Widget _buildTextField({required TextEditingController controller, required String hint, bool isPassword = false, bool obscure = false, VoidCallback? onToggleVisibility}) {
     return TextField(
       controller: controller,

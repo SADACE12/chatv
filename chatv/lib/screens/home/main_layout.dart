@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../models/post_model.dart';
-import '../auth/login_screen.dart'; // Для кнопки выхода
+import '../auth/login_screen.dart';
+import '../../data/app_data.dart';
 
 class MainLayout extends StatefulWidget {
   const MainLayout({super.key});
@@ -13,16 +15,47 @@ class _MainLayoutState extends State<MainLayout> {
   final TextEditingController _postController = TextEditingController();
   List<Post> posts = [];
 
+  @override
+  void initState() {
+    super.initState();
+    _loadPosts(); // Загружаем посты при входе
+  }
+
+  // ЗАГРУЗКА ПОСТОВ ИЗ ПАМЯТИ
+  Future<void> _loadPosts() async {
+    final prefs = await SharedPreferences.getInstance();
+    final List<String>? savedPosts = prefs.getStringList('saved_posts');
+    
+    if (savedPosts != null) {
+      setState(() {
+        posts = savedPosts.map((text) => Post(
+          username: 'Вы', // Убрали (User)
+          avatarColor: Colors.orange,
+          timeAgo: 'ранее',
+          text: text,
+        )).toList();
+      });
+    }
+  }
+
+  // СОХРАНЕНИЕ ПОСТОВ В ПАМЯТЬ
+  Future<void> _savePosts() async {
+    final prefs = await SharedPreferences.getInstance();
+    List<String> postTexts = posts.map((p) => p.text).toList();
+    await prefs.setStringList('saved_posts', postTexts);
+  }
+
   void _publishPost() {
     if (_postController.text.trim().isEmpty) return;
     setState(() {
       posts.insert(0, Post(
-        username: 'Вы (User)',
+        username: 'Вы', // Здесь тоже убрали (User)
         avatarColor: Colors.orange,
         timeAgo: 'только что',
         text: _postController.text,
       ));
       _postController.clear();
+      _savePosts(); // Сохраняем после публикации
       FocusScope.of(context).unfocus();
     });
   }
@@ -34,20 +67,13 @@ class _MainLayoutState extends State<MainLayout> {
 
     return Scaffold(
       appBar: isMobile ? AppBar(
-        title: const Text('Chat V', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: const Text('ChatV', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blueAccent)),
         backgroundColor: const Color(0xFF121212),
         elevation: 0,
         centerTitle: true,
-        leading: Builder(
-          builder: (context) => IconButton(
-            icon: const Icon(Icons.menu),
-            onPressed: () => Scaffold.of(context).openDrawer(),
-          ),
-        ),
+        automaticallyImplyLeading: false, 
       ) : null,
       
-      drawer: isMobile ? const Drawer(child: LeftSidebarContent()) : null,
-
       body: Row(
         children: [
           if (!isMobile)
@@ -59,13 +85,16 @@ class _MainLayoutState extends State<MainLayout> {
               color: const Color(0xFF000000),
               child: Align(
                 alignment: Alignment.topCenter,
-                child: Container(
+                child: SizedBox(
                   width: isMobile ? screenWidth : 700, 
                   child: ListView(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
                     children: [
                       const TopTabs(),
                       const SizedBox(height: 16),
+                      
+                      const ClanEmojisPanel(),
+
                       _buildCreatePostField(),
                       const SizedBox(height: 16),
                       
@@ -173,6 +202,64 @@ class _MainLayoutState extends State<MainLayout> {
   }
 }
 
+class ClanEmojisPanel extends StatelessWidget {
+  const ClanEmojisPanel({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    if (AppData.activeClans.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    final List<Map<String, dynamic>> activeClans = AppData.activeClans.entries
+        .map((e) => {'emoji': e.key, 'count': e.value})
+        .toList();
+    
+    activeClans.sort((a, b) => (b['count'] as int).compareTo(a['count'] as int));
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: SizedBox(
+        height: 90,
+        child: ListView.builder(
+          scrollDirection: Axis.horizontal,
+          itemCount: activeClans.length,
+          itemBuilder: (context, index) {
+            final clan = activeClans[index];
+            return Padding(
+              padding: const EdgeInsets.only(right: 16),
+              child: Column(
+                children: [
+                  Container(
+                    width: 54,
+                    height: 54,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1E1E1E),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white24, width: 1.5),
+                    ),
+                    child: Center(
+                      child: Text(
+                        clan['emoji'], 
+                        style: const TextStyle(fontSize: 26),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    '${clan['count']} чел.', 
+                    style: const TextStyle(color: Colors.grey, fontSize: 11, fontWeight: FontWeight.bold),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
 class PostCard extends StatelessWidget {
   final Post post;
   const PostCard({super.key, required this.post});
@@ -205,18 +292,6 @@ class PostCard extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           Text(post.text, style: const TextStyle(fontSize: 15, height: 1.4)),
-          if (post.hasImage) ...[
-            const SizedBox(height: 12),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(12),
-              child: Image.network(
-                'https://picsum.photos/800/500', 
-                fit: BoxFit.cover,
-                loadingBuilder: (context, child, loadingProgress) => 
-                  loadingProgress == null ? child : Container(height: 200, color: Colors.white10),
-              ),
-            ),
-          ],
           const SizedBox(height: 16),
           const Row(
             children: [
@@ -250,25 +325,31 @@ class LeftSidebarContent extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Chat V', style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: Colors.white)),
+          const Text('ChatV', style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: Colors.blueAccent)),
           const Text('v1.1 beta', style: TextStyle(color: Colors.grey, fontSize: 12)),
           const SizedBox(height: 40),
+          
+          _item(Icons.person_outline, 'Профиль'),
           _item(Icons.feed, 'Лента', active: true),
           _item(Icons.search, 'Поиск'),
-          _item(Icons.flash_on, 'Ивент'),
           _item(Icons.notifications_none, 'Уведомления'),
-          _item(Icons.person_outline, 'Профиль'),
+          
           const Spacer(),
-          // Добавил рабочую кнопку выхода
           ListTile(
             contentPadding: const EdgeInsets.symmetric(horizontal: 12),
             leading: const Icon(Icons.logout, color: Colors.redAccent),
             title: const Text('Выйти', style: TextStyle(color: Colors.redAccent)),
-            onTap: () {
-              Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(builder: (context) => const LoginScreen()),
-              );
+            onTap: () async {
+              final prefs = await SharedPreferences.getInstance();
+              await prefs.clear();
+              AppData.activeClans.clear();
+
+              if (context.mounted) {
+                Navigator.pushReplacement(
+                  context,
+                  MaterialPageRoute(builder: (context) => const LoginScreen()),
+                );
+              }
             },
           ),
         ],
@@ -303,7 +384,7 @@ class RightSidebarContent extends StatelessWidget {
           SizedBox(height: 12),
           Text('Конфиденциальность', style: TextStyle(color: Colors.grey, fontSize: 13)),
           SizedBox(height: 12),
-          Text('© 2026 Chat V', style: TextStyle(color: Colors.white24, fontSize: 12)),
+          Text('© 2026 ChatV', style: TextStyle(color: Colors.white24, fontSize: 12)),
         ],
       ),
     );
@@ -321,7 +402,6 @@ class TopTabs extends StatelessWidget {
       child: Row(
         children: [
           _t('Для вас', true),
-          _t('Кланы', false),
           _t('Подписки', false),
         ],
       ),
