@@ -3,6 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../models/post_model.dart';
 import '../auth/login_screen.dart';
 import '../../data/app_data.dart';
+import 'profile_screen.dart'; // <--- Импортируем новый экран
 
 class MainLayout extends StatefulWidget {
   const MainLayout({super.key});
@@ -14,22 +15,21 @@ class MainLayout extends StatefulWidget {
 class _MainLayoutState extends State<MainLayout> {
   final TextEditingController _postController = TextEditingController();
   List<Post> posts = [];
+  int _currentIndex = 1; // 0 - Профиль, 1 - Лента
 
   @override
   void initState() {
     super.initState();
-    _loadPosts(); // Загружаем посты при входе
+    _loadPosts();
   }
 
-  // ЗАГРУЗКА ПОСТОВ ИЗ ПАМЯТИ
   Future<void> _loadPosts() async {
     final prefs = await SharedPreferences.getInstance();
     final List<String>? savedPosts = prefs.getStringList('saved_posts');
-    
     if (savedPosts != null) {
       setState(() {
         posts = savedPosts.map((text) => Post(
-          username: 'Вы', // Убрали (User)
+          username: 'Вы',
           avatarColor: Colors.orange,
           timeAgo: 'ранее',
           text: text,
@@ -38,7 +38,6 @@ class _MainLayoutState extends State<MainLayout> {
     }
   }
 
-  // СОХРАНЕНИЕ ПОСТОВ В ПАМЯТЬ
   Future<void> _savePosts() async {
     final prefs = await SharedPreferences.getInstance();
     List<String> postTexts = posts.map((p) => p.text).toList();
@@ -49,13 +48,13 @@ class _MainLayoutState extends State<MainLayout> {
     if (_postController.text.trim().isEmpty) return;
     setState(() {
       posts.insert(0, Post(
-        username: 'Вы', // Здесь тоже убрали (User)
+        username: 'Вы',
         avatarColor: Colors.orange,
         timeAgo: 'только что',
         text: _postController.text,
       ));
       _postController.clear();
-      _savePosts(); // Сохраняем после публикации
+      _savePosts();
       FocusScope.of(context).unfocus();
     });
   }
@@ -77,7 +76,13 @@ class _MainLayoutState extends State<MainLayout> {
       body: Row(
         children: [
           if (!isMobile)
-            const Expanded(flex: 2, child: LeftSidebarContent()),
+            Expanded(
+              flex: 2, 
+              child: LeftSidebarContent(
+                activeIdx: _currentIndex, 
+                onSelect: (idx) => setState(() => _currentIndex = idx)
+              )
+            ),
 
           Expanded(
             flex: 5,
@@ -87,34 +92,10 @@ class _MainLayoutState extends State<MainLayout> {
                 alignment: Alignment.topCenter,
                 child: SizedBox(
                   width: isMobile ? screenWidth : 700, 
-                  child: ListView(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
-                    children: [
-                      const TopTabs(),
-                      const SizedBox(height: 16),
-                      
-                      const ClanEmojisPanel(),
-
-                      _buildCreatePostField(),
-                      const SizedBox(height: 16),
-                      
-                      if (posts.isEmpty)
-                        const Padding(
-                          padding: EdgeInsets.only(top: 40),
-                          child: Center(
-                            child: Text(
-                              'Здесь пока пусто. Опубликуйте первый пост!',
-                              style: TextStyle(color: Colors.grey, fontSize: 16),
-                            ),
-                          ),
-                        )
-                      else
-                        ...posts.map((post) => Padding(
-                          padding: const EdgeInsets.only(bottom: 12),
-                          child: PostCard(post: post),
-                        )),
-                    ],
-                  ),
+                  // ПЕРЕКЛЮЧЕНИЕ МЕЖДУ ЛЕНТОЙ И ПРОФИЛЕМ
+                  child: _currentIndex == 0 
+                    ? const ProfileScreen() 
+                    : _buildFeed(),
                 ),
               ),
             ),
@@ -129,9 +110,14 @@ class _MainLayoutState extends State<MainLayout> {
         backgroundColor: const Color(0xFF121212),
         selectedItemColor: Colors.white,
         unselectedItemColor: Colors.grey,
+        currentIndex: _currentIndex == 0 ? 3 : 0, // Условно мапим на иконки
         type: BottomNavigationBarType.fixed,
         showSelectedLabels: false,
         showUnselectedLabels: false,
+        onTap: (idx) {
+          if (idx == 0) setState(() => _currentIndex = 1);
+          if (idx == 3) setState(() => _currentIndex = 0);
+        },
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.home_filled), label: ''),
           BottomNavigationBarItem(icon: Icon(Icons.search), label: ''),
@@ -142,13 +128,33 @@ class _MainLayoutState extends State<MainLayout> {
     );
   }
 
+  Widget _buildFeed() {
+    return ListView(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+      children: [
+        const TopTabs(),
+        const SizedBox(height: 16),
+        const ClanEmojisPanel(),
+        _buildCreatePostField(),
+        const SizedBox(height: 16),
+        if (posts.isEmpty)
+          const Padding(
+            padding: EdgeInsets.only(top: 40),
+            child: Center(child: Text('Здесь пока пусто!', style: TextStyle(color: Colors.grey))),
+          )
+        else
+          ...posts.map((post) => Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: PostCard(post: post),
+          )),
+      ],
+    );
+  }
+
   Widget _buildCreatePostField() {
     return Container(
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1E1E1E),
-        borderRadius: BorderRadius.circular(16),
-      ),
+      decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(16)),
       child: Column(
         children: [
           Row(
@@ -161,11 +167,7 @@ class _MainLayoutState extends State<MainLayout> {
                   controller: _postController,
                   maxLines: null,
                   style: const TextStyle(fontSize: 16),
-                  decoration: const InputDecoration(
-                    hintText: 'Что нового?',
-                    hintStyle: TextStyle(color: Colors.grey),
-                    border: InputBorder.none,
-                  ),
+                  decoration: const InputDecoration(hintText: 'Что нового?', hintStyle: TextStyle(color: Colors.grey), border: InputBorder.none),
                 ),
               ),
             ],
@@ -179,19 +181,11 @@ class _MainLayoutState extends State<MainLayout> {
                   Icon(Icons.image_outlined, color: Colors.grey, size: 22),
                   SizedBox(width: 16),
                   Icon(Icons.emoji_emotions_outlined, color: Colors.grey, size: 22),
-                  SizedBox(width: 16),
-                  Icon(Icons.poll_outlined, color: Colors.grey, size: 22),
                 ],
               ),
               ElevatedButton(
                 onPressed: _publishPost,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.white,
-                  foregroundColor: Colors.black,
-                  elevation: 0,
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                ),
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.white, foregroundColor: Colors.black, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20))),
                 child: const Text('Опубликовать', style: TextStyle(fontWeight: FontWeight.bold)),
               ),
             ],
@@ -202,21 +196,61 @@ class _MainLayoutState extends State<MainLayout> {
   }
 }
 
-class ClanEmojisPanel extends StatelessWidget {
-  const ClanEmojisPanel({super.key});
+// ОБНОВЛЕННЫЙ САЙДБАР С ОБРАБОТКОЙ НАЖАТИЙ
+class LeftSidebarContent extends StatelessWidget {
+  final int activeIdx;
+  final Function(int) onSelect;
+  const LeftSidebarContent({super.key, required this.activeIdx, required this.onSelect});
 
   @override
   Widget build(BuildContext context) {
-    if (AppData.activeClans.isEmpty) {
-      return const SizedBox.shrink();
-    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 40),
+      color: const Color(0xFF121212),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('ChatV', style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: Colors.blueAccent)),
+          const Text('v1.1 beta', style: TextStyle(color: Colors.grey, fontSize: 12)),
+          const SizedBox(height: 40),
+          _item(Icons.person_outline, 'Профиль', activeIdx == 0, () => onSelect(0)),
+          _item(Icons.feed, 'Лента', activeIdx == 1, () => onSelect(1)),
+          _item(Icons.search, 'Поиск', false, () {}),
+          _item(Icons.notifications_none, 'Уведомления', false, () {}),
+          const Spacer(),
+          ListTile(
+            leading: const Icon(Icons.logout, color: Colors.redAccent),
+            title: const Text('Выйти', style: TextStyle(color: Colors.redAccent)),
+            onTap: () async {
+              final prefs = await SharedPreferences.getInstance();
+              await prefs.clear();
+              Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const LoginScreen()));
+            },
+          ),
+        ],
+      ),
+    );
+  }
 
-    final List<Map<String, dynamic>> activeClans = AppData.activeClans.entries
-        .map((e) => {'emoji': e.key, 'count': e.value})
-        .toList();
-    
+  Widget _item(IconData icon, String title, bool active, VoidCallback tap) {
+    return ListTile(
+      onTap: tap,
+      leading: Icon(icon, color: active ? Colors.white : Colors.grey),
+      title: Text(title, style: TextStyle(color: active ? Colors.white : Colors.grey, fontWeight: active ? FontWeight.bold : FontWeight.normal)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      tileColor: active ? const Color(0xFF1E1E1E) : Colors.transparent,
+    );
+  }
+}
+
+// ОСТАЛЬНЫЕ ВИДЖЕТЫ (ClanEmojisPanel, PostCard, RightSidebarContent, TopTabs) ОСТАЮТСЯ БЕЗ ИЗМЕНЕНИЙ
+class ClanEmojisPanel extends StatelessWidget {
+  const ClanEmojisPanel({super.key});
+  @override
+  Widget build(BuildContext context) {
+    if (AppData.activeClans.isEmpty) return const SizedBox.shrink();
+    final List<Map<String, dynamic>> activeClans = AppData.activeClans.entries.map((e) => {'emoji': e.key, 'count': e.value}).toList();
     activeClans.sort((a, b) => (b['count'] as int).compareTo(a['count'] as int));
-
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: SizedBox(
@@ -231,25 +265,12 @@ class ClanEmojisPanel extends StatelessWidget {
               child: Column(
                 children: [
                   Container(
-                    width: 54,
-                    height: 54,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF1E1E1E),
-                      shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white24, width: 1.5),
-                    ),
-                    child: Center(
-                      child: Text(
-                        clan['emoji'], 
-                        style: const TextStyle(fontSize: 26),
-                      ),
-                    ),
+                    width: 54, height: 54,
+                    decoration: BoxDecoration(color: const Color(0xFF1E1E1E), shape: BoxShape.circle, border: Border.all(color: Colors.white24, width: 1.5)),
+                    child: Center(child: Text(clan['emoji'], style: const TextStyle(fontSize: 26))),
                   ),
                   const SizedBox(height: 6),
-                  Text(
-                    '${clan['count']} чел.', 
-                    style: const TextStyle(color: Colors.grey, fontSize: 11, fontWeight: FontWeight.bold),
-                  ),
+                  Text('${clan['count']} чел.', style: const TextStyle(color: Colors.grey, fontSize: 11, fontWeight: FontWeight.bold)),
                 ],
               ),
             );
@@ -263,15 +284,11 @@ class ClanEmojisPanel extends StatelessWidget {
 class PostCard extends StatelessWidget {
   final Post post;
   const PostCard({super.key, required this.post});
-
   @override
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1E1E1E),
-        borderRadius: BorderRadius.circular(16),
-      ),
+      decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(16)),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -279,13 +296,10 @@ class PostCard extends StatelessWidget {
             children: [
               CircleAvatar(backgroundColor: post.avatarColor, radius: 20),
               const SizedBox(width: 12),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(post.username, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-                  Text(post.timeAgo, style: const TextStyle(color: Colors.grey, fontSize: 12)),
-                ],
-              ),
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(post.username, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                Text(post.timeAgo, style: const TextStyle(color: Colors.grey, fontSize: 12)),
+              ]),
               const Spacer(),
               const Icon(Icons.more_horiz, color: Colors.grey),
             ],
@@ -293,129 +307,57 @@ class PostCard extends StatelessWidget {
           const SizedBox(height: 12),
           Text(post.text, style: const TextStyle(fontSize: 15, height: 1.4)),
           const SizedBox(height: 16),
-          const Row(
-            children: [
-              Icon(Icons.favorite_border, size: 20, color: Colors.grey),
-              SizedBox(width: 6),
-              Text('0', style: TextStyle(color: Colors.grey)),
-              SizedBox(width: 20),
-              Icon(Icons.mode_comment_outlined, size: 20, color: Colors.grey),
-              SizedBox(width: 6),
-              Text('0', style: TextStyle(color: Colors.grey)),
-              Spacer(),
-              Icon(Icons.remove_red_eye_outlined, size: 18, color: Colors.grey),
-              SizedBox(width: 6),
-              Text('1', style: TextStyle(color: Colors.grey)),
-            ],
-          ),
+          const Row(children: [
+            Icon(Icons.favorite_border, size: 20, color: Colors.grey),
+            SizedBox(width: 6), Text('0', style: TextStyle(color: Colors.grey)),
+            SizedBox(width: 20),
+            Icon(Icons.mode_comment_outlined, size: 20, color: Colors.grey),
+            SizedBox(width: 6), Text('0', style: TextStyle(color: Colors.grey)),
+            Spacer(),
+            Icon(Icons.remove_red_eye_outlined, size: 18, color: Colors.grey),
+            SizedBox(width: 6), Text('1', style: TextStyle(color: Colors.grey)),
+          ]),
         ],
       ),
-    );
-  }
-}
-
-class LeftSidebarContent extends StatelessWidget {
-  const LeftSidebarContent({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 40),
-      color: const Color(0xFF121212),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text('ChatV', style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: Colors.blueAccent)),
-          const Text('v1.1 beta', style: TextStyle(color: Colors.grey, fontSize: 12)),
-          const SizedBox(height: 40),
-          
-          _item(Icons.person_outline, 'Профиль'),
-          _item(Icons.feed, 'Лента', active: true),
-          _item(Icons.search, 'Поиск'),
-          _item(Icons.notifications_none, 'Уведомления'),
-          
-          const Spacer(),
-          ListTile(
-            contentPadding: const EdgeInsets.symmetric(horizontal: 12),
-            leading: const Icon(Icons.logout, color: Colors.redAccent),
-            title: const Text('Выйти', style: TextStyle(color: Colors.redAccent)),
-            onTap: () async {
-              final prefs = await SharedPreferences.getInstance();
-              await prefs.clear();
-              AppData.activeClans.clear();
-
-              if (context.mounted) {
-                Navigator.pushReplacement(
-                  context,
-                  MaterialPageRoute(builder: (context) => const LoginScreen()),
-                );
-              }
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _item(IconData icon, String title, {bool active = false, Color? color}) {
-    return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 12),
-      leading: Icon(icon, color: color ?? (active ? Colors.white : Colors.grey)),
-      title: Text(title, style: TextStyle(color: color ?? (active ? Colors.white : Colors.grey), fontWeight: active ? FontWeight.bold : FontWeight.normal)),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      tileColor: active ? const Color(0xFF1E1E1E) : Colors.transparent,
-      onTap: () {},
     );
   }
 }
 
 class RightSidebarContent extends StatelessWidget {
   const RightSidebarContent({super.key});
-
   @override
   Widget build(BuildContext context) {
     return const Padding(
       padding: EdgeInsets.all(30),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.end,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Вакансии', style: TextStyle(color: Colors.grey, fontSize: 13)),
-          SizedBox(height: 12),
-          Text('Конфиденциальность', style: TextStyle(color: Colors.grey, fontSize: 13)),
-          SizedBox(height: 12),
-          Text('© 2026 ChatV', style: TextStyle(color: Colors.white24, fontSize: 12)),
-        ],
-      ),
+      child: Column(mainAxisAlignment: MainAxisAlignment.end, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('Вакансии', style: TextStyle(color: Colors.grey, fontSize: 13)),
+        SizedBox(height: 12),
+        Text('Конфиденциальность', style: TextStyle(color: Colors.grey, fontSize: 13)),
+        SizedBox(height: 12),
+        Text('© 2026 ChatV', style: TextStyle(color: Colors.white24, fontSize: 12)),
+      ]),
     );
   }
 }
 
 class TopTabs extends StatelessWidget {
   const TopTabs({super.key});
-
   @override
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(4),
       decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(30)),
-      child: Row(
-        children: [
-          _t('Для вас', true),
-          _t('Подписки', false),
-        ],
-      ),
+      child: Row(children: [
+        _t('Для вас', true),
+        _t('Подписки', false),
+      ]),
     );
   }
-
   Widget _t(String text, bool active) {
     return Expanded(
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 10),
-        decoration: BoxDecoration(
-          color: active ? const Color(0xFF333333) : Colors.transparent,
-          borderRadius: BorderRadius.circular(25),
-        ),
+        decoration: BoxDecoration(color: active ? const Color(0xFF333333) : Colors.transparent, borderRadius: BorderRadius.circular(25)),
         child: Center(child: Text(text, style: TextStyle(color: active ? Colors.white : Colors.grey, fontSize: 13))),
       ),
     );

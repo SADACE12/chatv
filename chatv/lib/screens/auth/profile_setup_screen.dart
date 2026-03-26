@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../home/main_layout.dart';
 import '../../data/app_data.dart';
-import 'dart:math';
 
 class ProfileSetupScreen extends StatefulWidget {
   const ProfileSetupScreen({super.key});
@@ -44,11 +43,16 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
 
   void _finishSetup() async {
     if (_selectedEmoji != null) {
-      AppData.activeClans[_selectedEmoji!] = (AppData.activeClans[_selectedEmoji!] ?? 0) + 1;
-
       final prefs = await SharedPreferences.getInstance();
+      
+      // СОХРАНЯЕМ ВСЕ ДАННЫЕ В ПАМЯТЬ
       await prefs.setBool('isLoggedIn', true);
       await prefs.setString('userEmoji', _selectedEmoji!);
+      await prefs.setString('userName', _nameController.text.trim());
+      await prefs.setString('userHandle', _usernameController.text.trim());
+
+      // Обновляем локальную статистику кланов
+      AppData.activeClans[_selectedEmoji!] = (AppData.activeClans[_selectedEmoji!] ?? 0) + 1;
 
       if (mounted) {
         Navigator.pushReplacement(
@@ -178,7 +182,7 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
         const SizedBox(height: 12),
         _buildTextField(
           controller: _nameController, 
-          hint: 'Алмас' // <--- ОБНОВЛЕНО
+          hint: 'Алмас'
         ),
         
         const SizedBox(height: 24),
@@ -189,7 +193,7 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
         const SizedBox(height: 12),
         _buildTextField(
           controller: _usernameController, 
-          hint: 'zxcAlmas' // <--- ОБНОВЛЕНО
+          hint: 'zxcAlmas'
         ),
         
         const SizedBox(height: 40),
