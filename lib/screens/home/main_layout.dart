@@ -4,6 +4,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:io';
 import 'dart:convert';
+import 'dart:async'; 
 import 'package:flutter/foundation.dart' show kIsWeb; 
 import 'package:video_player/video_player.dart';
 
@@ -347,7 +348,6 @@ class _MainLayoutState extends State<MainLayout> {
                   ),
                 ),
               ),
-              // УБРАН CONST + САМ КЛАСС ТЕПЕРЬ БЕЗ CONST КОНСТРУКТОРА
               if (screenWidth > 1200) Expanded(flex: 2, child: RightSidebarContent()), 
             ],
           ),
@@ -506,24 +506,377 @@ class _MainLayoutState extends State<MainLayout> {
   }
 }
 
+// ==========================================
+// ВИДЖЕТ ПОЛНОЭКРАННОГО ПРОСМОТРА ФОТО
+// ==========================================
+class FullScreenImageViewer extends StatelessWidget {
+  final String imagePath;
+  const FullScreenImageViewer({super.key, required this.imagePath});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black, 
+        iconTheme: const IconThemeData(color: Colors.white),
+        elevation: 0,
+      ),
+      body: Center(
+        child: InteractiveViewer(
+          panEnabled: true,
+          minScale: 0.5,
+          maxScale: 4.0,
+          child: kIsWeb ? Image.network(imagePath) : Image.file(File(imagePath)),
+        ),
+      ),
+    );
+  }
+}
+
+// ==========================================
+// ИНТЕРАКТИВНЫЙ ВИДЕОПЛЕЕР 
+// ==========================================
 class PostVideoPlayer extends StatefulWidget {
   final String path;
   const PostVideoPlayer({super.key, required this.path});
   @override
   State<PostVideoPlayer> createState() => _PostVideoPlayerState();
 }
+
 class _PostVideoPlayerState extends State<PostVideoPlayer> {
   late VideoPlayerController _controller;
+  bool _showControls = true;
+  Timer? _hideTimer;
+
   @override
-  void initState() { super.initState(); _controller = VideoPlayerController.file(File(widget.path))..initialize().then((_) => setState(() {})); }
+  void initState() { 
+    super.initState(); 
+    if (kIsWeb) {
+      _controller = VideoPlayerController.networkUrl(Uri.parse(widget.path));
+    } else {
+      _controller = VideoPlayerController.file(File(widget.path));
+    }
+    _controller.initialize().then((_) {
+      setState(() {});
+      _startHideTimer();
+    }); 
+    _controller.addListener(() {
+      if (mounted) setState(() {});
+    });
+  }
+
+  void _startHideTimer() {
+    _hideTimer?.cancel();
+    _hideTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted && _controller.value.isPlaying) {
+        setState(() => _showControls = false);
+      }
+    });
+  }
+
+  void _togglePlay() {
+    setState(() {
+      if (_controller.value.isPlaying) {
+        _controller.pause();
+        _showControls = true;
+        _hideTimer?.cancel(); // Не скрываем элементы, когда видео на паузе
+      } else {
+        _controller.play();
+        _showControls = true;
+        _startHideTimer();
+      }
+    });
+  }
+
   @override
-  void dispose() { _controller.dispose(); super.dispose(); }
+  void dispose() { 
+    _hideTimer?.cancel();
+    _controller.dispose(); 
+    super.dispose(); 
+  }
+
   @override
   Widget build(BuildContext context) {
-    return _controller.value.isInitialized ? AspectRatio(aspectRatio: _controller.value.aspectRatio, child: VideoPlayer(_controller)) : const SizedBox(height: 200, child: Center(child: CircularProgressIndicator()));
+    return _controller.value.isInitialized 
+      ? Stack(
+          alignment: Alignment.center,
+          children: [
+            // Гигантская кнопка на всё видео (переключает плей/паузу)
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: _togglePlay,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  color: _showControls && !_controller.value.isPlaying 
+                      ? Colors.black38 
+                      : Colors.transparent,
+                  child: Center(
+                    child: AnimatedOpacity(
+                      opacity: !_controller.value.isPlaying ? 1.0 : 0.0,
+                      duration: const Duration(milliseconds: 200),
+                      child: const CircleAvatar(
+                        backgroundColor: Colors.black54, 
+                        radius: 30, 
+                        child: Icon(Icons.play_arrow, color: Colors.white, size: 35)
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            
+            // Само видео
+            IgnorePointer(
+              child: AspectRatio(
+                aspectRatio: _controller.value.aspectRatio, 
+                child: VideoPlayer(_controller)
+              ),
+            ),
+            
+            // Нижняя панель с ползунком и кнопкой фуллскрина
+            if (_showControls)
+              Positioned(
+                bottom: 0, left: 0, right: 0,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () {}, // Перехват случайных нажатий, чтобы видео не ставилось на паузу при клике на панель
+                  child: Container(
+                    color: Colors.black54,
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: VideoProgressIndicator(
+                            _controller, 
+                            allowScrubbing: true,
+                            colors: const VideoProgressColors(playedColor: Colors.blueAccent, backgroundColor: Colors.white54),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Icon(_controller.value.volume > 0 ? Icons.volume_up : Icons.volume_off, color: Colors.white, size: 18),
+                        
+                        SizedBox(
+                          width: 70,
+                          child: SliderTheme(
+                            data: SliderTheme.of(context).copyWith(
+                              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                              overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+                              trackHeight: 2,
+                            ),
+                            child: Slider(
+                              value: _controller.value.volume,
+                              min: 0.0,
+                              max: 1.0,
+                              activeColor: Colors.blueAccent,
+                              inactiveColor: Colors.white54,
+                              onChanged: (val) {
+                                _controller.setVolume(val);
+                                if (_controller.value.isPlaying) _startHideTimer(); 
+                              },
+                            ),
+                          ),
+                        ),
+                        
+                        IconButton(
+                          constraints: const BoxConstraints(),
+                          padding: EdgeInsets.zero,
+                          icon: const Icon(Icons.fullscreen, color: Colors.white, size: 20),
+                          onPressed: () {
+                            _hideTimer?.cancel();
+                            Navigator.push(context, MaterialPageRoute(builder: (_) => FullScreenVideoPage(controller: _controller))).then((_) {
+                              if (_controller.value.isPlaying) _startHideTimer();
+                            });
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ) 
+      : const SizedBox(height: 200, child: Center(child: CircularProgressIndicator()));
   }
 }
 
+// ==========================================
+// ПОЛНОЭКРАННЫЙ ВИДЕОПЛЕЕР С ТАЙМЕРОМ
+// ==========================================
+class FullScreenVideoPage extends StatefulWidget {
+  final VideoPlayerController controller;
+  const FullScreenVideoPage({super.key, required this.controller});
+
+  @override
+  State<FullScreenVideoPage> createState() => _FullScreenVideoPageState();
+}
+
+class _FullScreenVideoPageState extends State<FullScreenVideoPage> {
+  bool _showControls = true;
+  Timer? _hideTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_listener);
+    _startHideTimer();
+  }
+
+  void _startHideTimer() {
+    _hideTimer?.cancel();
+    _hideTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted && widget.controller.value.isPlaying) {
+        setState(() => _showControls = false);
+      }
+    });
+  }
+
+  void _listener() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    _hideTimer?.cancel();
+    widget.controller.removeListener(_listener);
+    super.dispose();
+  }
+
+  void _togglePlay() {
+    setState(() {
+      if (widget.controller.value.isPlaying) {
+        widget.controller.pause();
+        _showControls = true;
+        _hideTimer?.cancel();
+      } else {
+        widget.controller.play();
+        _showControls = true;
+        _startHideTimer();
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            // Вся зона экрана переключает плей/паузу
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: _togglePlay,
+                child: Container(
+                  color: Colors.transparent,
+                ),
+              ),
+            ),
+            
+            // Видео
+            IgnorePointer(
+              child: AspectRatio(
+                aspectRatio: widget.controller.value.aspectRatio,
+                child: VideoPlayer(widget.controller),
+              ),
+            ),
+            
+            if (_showControls) ...[
+              IgnorePointer(child: Container(color: Colors.black38)), // Затемнение фона при паузе
+              
+              // Кнопка закрытия
+              Positioned(
+                top: 10, left: 10,
+                child: GestureDetector(
+                  onTap: () {},
+                  child: IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white, size: 30),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ),
+              ),
+              
+              // Центральная иконка Плей/Пауза
+              IgnorePointer(
+                child: AnimatedOpacity(
+                  opacity: !widget.controller.value.isPlaying ? 1.0 : 0.0,
+                  duration: const Duration(milliseconds: 200),
+                  child: const CircleAvatar(
+                    backgroundColor: Colors.black54, 
+                    radius: 40, 
+                    child: Icon(Icons.play_arrow, color: Colors.white, size: 45)
+                  ),
+                ),
+              ),
+              
+              // Нижняя панель
+              Positioned(
+                bottom: 20, left: 20, right: 20,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () {}, // Перехват кликов
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      VideoProgressIndicator(
+                        widget.controller, 
+                        allowScrubbing: true,
+                        colors: const VideoProgressColors(playedColor: Colors.blueAccent, backgroundColor: Colors.white54),
+                      ),
+                      const SizedBox(height: 10),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(widget.controller.value.volume > 0 ? Icons.volume_up : Icons.volume_off, color: Colors.white),
+                              SizedBox(
+                                width: 120,
+                                child: SliderTheme(
+                                  data: SliderTheme.of(context).copyWith(
+                                    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                                    overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+                                    trackHeight: 3,
+                                  ),
+                                  child: Slider(
+                                    value: widget.controller.value.volume,
+                                    min: 0.0,
+                                    max: 1.0,
+                                    activeColor: Colors.blueAccent,
+                                    inactiveColor: Colors.white54,
+                                    onChanged: (val) {
+                                      widget.controller.setVolume(val);
+                                      if (widget.controller.value.isPlaying) _startHideTimer();
+                                    },
+                                  ),
+                                ),
+                              )
+                            ],
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.fullscreen_exit, color: Colors.white, size: 28),
+                            onPressed: () => Navigator.pop(context),
+                          ),
+                        ],
+                      )
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ==========================================
+// КАРТОЧКА ПОСТА 
+// ==========================================
 class PostCard extends StatelessWidget {
   final Post post; 
   final VoidCallback onLike;
@@ -570,7 +923,15 @@ class PostCard extends StatelessWidget {
             ]
           ),
           if (post.text.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 12), child: Text(post.text, style: TextStyle(color: AppColors.text, fontSize: 15))),
-          if (post.imagePath != null || post.fileName != null) Padding(padding: const EdgeInsets.only(top: 12), child: ClipRRect(borderRadius: BorderRadius.circular(12), child: _buildMedia(post))),
+          
+          if (post.imagePath != null || post.fileName != null) 
+            Padding(
+              padding: const EdgeInsets.only(top: 12), 
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12), 
+                child: _buildMedia(post, context)
+              )
+            ),
           
           if (post.pollOptions != null && post.pollVotes != null) 
             Padding(
@@ -651,10 +1012,20 @@ class PostCard extends StatelessWidget {
       ),
     );
   }
-  Widget _buildMedia(Post p) {
-    if (p.mediaType == PostMediaType.image) return kIsWeb ? Image.network(p.imagePath!) : Image.file(File(p.imagePath!), fit: BoxFit.cover, width: double.infinity);
-    if (p.mediaType == PostMediaType.video) return Container(height: 200, color: Colors.black, child: const Center(child: Icon(Icons.play_circle, color: Colors.white, size: 50)));
-    return Container(padding: const EdgeInsets.all(15), color: AppColors.input, child: Row(children: [const Icon(Icons.description, color: Colors.blueAccent), const SizedBox(width: 10), Expanded(child: Text(p.fileName ?? 'Файл', style: TextStyle(color: AppColors.text)))]));
+  
+  Widget _buildMedia(Post p, BuildContext context) {
+    if (p.mediaType == PostMediaType.image) {
+      return GestureDetector(
+        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => FullScreenImageViewer(imagePath: p.imagePath!))),
+        child: kIsWeb ? Image.network(p.imagePath!) : Image.file(File(p.imagePath!), fit: BoxFit.cover, width: double.infinity),
+      );
+    }
+    if (p.mediaType == PostMediaType.video) {
+      return PostVideoPlayer(path: p.imagePath!);
+    }
+    return Container(
+      padding: const EdgeInsets.all(15), color: AppColors.input, 
+      child: Row(children: [const Icon(Icons.description, color: Colors.blueAccent), const SizedBox(width: 10), Expanded(child: Text(p.fileName ?? 'Файл', style: TextStyle(color: AppColors.text)))]));
   }
 }
 
@@ -678,7 +1049,6 @@ class LeftSidebarContent extends StatelessWidget {
 }
 
 class RightSidebarContent extends StatelessWidget {
-  // Убран const из конструктора, чтобы виджет реагировал на смену темы
   RightSidebarContent({super.key}); 
   
   @override
