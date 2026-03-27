@@ -347,7 +347,8 @@ class _MainLayoutState extends State<MainLayout> {
                   ),
                 ),
               ),
-              if (screenWidth > 1200) Expanded(flex: 2, child: const RightSidebarContent()), 
+              // УБРАН CONST + САМ КЛАСС ТЕПЕРЬ БЕЗ CONST КОНСТРУКТОРА
+              if (screenWidth > 1200) Expanded(flex: 2, child: RightSidebarContent()), 
             ],
           ),
           bottomNavigationBar: isMobile ? BottomNavigationBar(
@@ -571,7 +572,6 @@ class PostCard extends StatelessWidget {
           if (post.text.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 12), child: Text(post.text, style: TextStyle(color: AppColors.text, fontSize: 15))),
           if (post.imagePath != null || post.fileName != null) Padding(padding: const EdgeInsets.only(top: 12), child: ClipRRect(borderRadius: BorderRadius.circular(12), child: _buildMedia(post))),
           
-          // ИНТЕРАКТИВНЫЙ БЛОК ОПРОСА С ПРОЦЕНТАМИ
           if (post.pollOptions != null && post.pollVotes != null) 
             Padding(
               padding: const EdgeInsets.only(top: 12), 
@@ -651,10 +651,9 @@ class PostCard extends StatelessWidget {
       ),
     );
   }
-
   Widget _buildMedia(Post p) {
     if (p.mediaType == PostMediaType.image) return kIsWeb ? Image.network(p.imagePath!) : Image.file(File(p.imagePath!), fit: BoxFit.cover, width: double.infinity);
-    if (p.mediaType == PostMediaType.video) return PostVideoPlayer(path: p.imagePath!);
+    if (p.mediaType == PostMediaType.video) return Container(height: 200, color: Colors.black, child: const Center(child: Icon(Icons.play_circle, color: Colors.white, size: 50)));
     return Container(padding: const EdgeInsets.all(15), color: AppColors.input, child: Row(children: [const Icon(Icons.description, color: Colors.blueAccent), const SizedBox(width: 10), Expanded(child: Text(p.fileName ?? 'Файл', style: TextStyle(color: AppColors.text)))]));
   }
 }
@@ -679,7 +678,9 @@ class LeftSidebarContent extends StatelessWidget {
 }
 
 class RightSidebarContent extends StatelessWidget {
-  const RightSidebarContent({super.key});
+  // Убран const из конструктора, чтобы виджет реагировал на смену темы
+  RightSidebarContent({super.key}); 
+  
   @override
   Widget build(BuildContext context) {
     return Container(
