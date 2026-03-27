@@ -41,7 +41,6 @@ class _MainLayoutState extends State<MainLayout> {
     _loadPosts();
   }
 
-  // ЗАГРУЗКА ИЗ ПАМЯТИ
   Future<void> _loadPosts() async {
     final prefs = await SharedPreferences.getInstance();
     final List<String>? jsonPosts = prefs.getStringList('saved_posts_json');
@@ -54,6 +53,8 @@ class _MainLayoutState extends State<MainLayout> {
             text: map['text'] ?? '', imagePath: map['imagePath'], fileName: map['fileName'],
             mediaType: PostMediaType.values[map['mediaType'] ?? 0],
             pollOptions: map['pollOptions'] != null ? List<String>.from(map['pollOptions']) : null,
+            pollVotes: map['pollVotes'] != null ? List<int>.from(map['pollVotes']) : null,
+            votedOptionIndex: map['votedOptionIndex'],
             likesCount: map['likesCount'] ?? 0, isLiked: map['isLiked'] ?? false,
             comments: map['comments'] != null ? List<String>.from(map['comments']) : [],
           );
@@ -62,18 +63,17 @@ class _MainLayoutState extends State<MainLayout> {
     }
   }
 
-  // СОХРАНЕНИЕ В ПАМЯТЬ
   Future<void> _savePosts() async {
     final prefs = await SharedPreferences.getInstance();
     List<String> jsonPosts = posts.map((p) => jsonEncode({
       'text': p.text, 'imagePath': p.imagePath, 'fileName': p.fileName,
       'mediaType': p.mediaType.index, 'pollOptions': p.pollOptions,
+      'pollVotes': p.pollVotes, 'votedOptionIndex': p.votedOptionIndex,
       'likesCount': p.likesCount, 'isLiked': p.isLiked, 'comments': p.comments,
     })).toList();
     await prefs.setStringList('saved_posts_json', jsonPosts);
   }
 
-  // ФУНКЦИЯ УДАЛЕНИЯ
   void _deletePost(int index) {
     showDialog(
       context: context,
@@ -99,7 +99,6 @@ class _MainLayoutState extends State<MainLayout> {
     );
   }
 
-  // ФУНКЦИЯ РЕДАКТИРОВАНИЯ
   void _editPost(int index) {
     TextEditingController editController = TextEditingController(text: posts[index].text);
     showDialog(
@@ -133,7 +132,6 @@ class _MainLayoutState extends State<MainLayout> {
     );
   }
 
-  // СИСТЕМА КОММЕНТАРИЕВ
   void _showComments(int index) {
     TextEditingController commentController = TextEditingController();
     showModalBottomSheet(
@@ -308,6 +306,7 @@ class _MainLayoutState extends State<MainLayout> {
         username: 'Вы', avatarColor: Colors.orange, timeAgo: 'только что', text: text,
         imagePath: _pickedFile?.path, fileName: _pickedFileName, mediaType: _currentMediaType,
         pollOptions: _isCreatingPoll ? currentPollOptions : null,
+        pollVotes: _isCreatingPoll ? List.filled(currentPollOptions.length, 0) : null,
       ));
       _postController.clear(); _pickedFile = null; _pickedFileName = null; _currentMediaType = PostMediaType.none;
       _isCreatingPoll = false; _pollControllers = [TextEditingController(), TextEditingController()];
@@ -343,12 +342,12 @@ class _MainLayoutState extends State<MainLayout> {
                     alignment: Alignment.topCenter,
                     child: SizedBox(
                       width: isMobile ? screenWidth : 700, 
-                      child: _currentIndex == 3 ? _buildSearchScreen() : (_currentIndex == 0 ? const ProfileScreen() : (_currentIndex == 2 ? const MessagesScreen() : _buildFeed())),
+                      child: _currentIndex == 3 ? _buildSearchScreen() : (_currentIndex == 0 ? ProfileScreen(allPosts: posts) : (_currentIndex == 2 ? const MessagesScreen() : _buildFeed())),
                     ),
                   ),
                 ),
               ),
-              if (screenWidth > 1200) Expanded(flex: 2, child: RightSidebarContent()), 
+              if (screenWidth > 1200) Expanded(flex: 2, child: const RightSidebarContent()), 
             ],
           ),
           bottomNavigationBar: isMobile ? BottomNavigationBar(
@@ -403,7 +402,8 @@ class _MainLayoutState extends State<MainLayout> {
                       onLike: () {}, 
                       onEdit: () {}, 
                       onDelete: () {}, 
-                      onComment: () {}
+                      onComment: () {},
+                      onVote: () {}, 
                     ),
                   ),
                 ),
@@ -428,6 +428,7 @@ class _MainLayoutState extends State<MainLayout> {
             onDelete: () => _deletePost(entry.key),
             onEdit: () => _editPost(entry.key),
             onComment: () => _showComments(entry.key),
+            onVote: () => setState(() { _savePosts(); }), 
           )
         )),
       ],
@@ -449,7 +450,32 @@ class _MainLayoutState extends State<MainLayout> {
                 child: Column(
                   children: [
                     TextField(controller: _postController, maxLines: null, style: TextStyle(color: AppColors.text), decoration: InputDecoration(hintText: _isCreatingPoll ? 'Задайте вопрос...' : 'Что нового?', hintStyle: TextStyle(color: AppColors.textSub), border: InputBorder.none)),
-                    if (_pickedFileName != null) Padding(padding: const EdgeInsets.only(top: 10), child: Text(_pickedFileName!, style: const TextStyle(color: Colors.blueAccent, fontWeight: FontWeight.bold))),
+                    
+                    if (_pickedFile != null) 
+                      Stack(
+                        alignment: Alignment.topRight,
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.only(top: 10),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(12),
+                              child: _currentMediaType == PostMediaType.image
+                                  ? (kIsWeb ? Image.network(_pickedFile!.path, fit: BoxFit.cover) : Image.file(File(_pickedFile!.path), fit: BoxFit.cover))
+                                  : _currentMediaType == PostMediaType.video
+                                      ? SizedBox(height: 200, child: PostVideoPlayer(path: _pickedFile!.path))
+                                      : Container(padding: const EdgeInsets.all(15), color: AppColors.input, child: Row(children: [const Icon(Icons.description, color: Colors.blueAccent), const SizedBox(width: 10), Expanded(child: Text(_pickedFileName ?? 'Файл', style: TextStyle(color: AppColors.text)))])),
+                            ),
+                          ),
+                          Positioned(
+                            top: 15, right: 5,
+                            child: GestureDetector(
+                              onTap: () => setState(() { _pickedFile = null; _pickedFileName = null; _currentMediaType = PostMediaType.none; }),
+                              child: const CircleAvatar(backgroundColor: Colors.black54, radius: 14, child: Icon(Icons.close, size: 16, color: Colors.white)),
+                            ),
+                          )
+                        ],
+                      ),
+
                     if (_isCreatingPoll) Column(children: [
                       ...List.generate(_pollControllers.length, (i) => Padding(padding: const EdgeInsets.only(top: 8), child: TextField(controller: _pollControllers[i], style: TextStyle(color: AppColors.text, fontSize: 14), decoration: InputDecoration(hintText: 'Вариант ${i+1}', filled: true, fillColor: AppColors.input, border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none))))),
                       TextButton(onPressed: () => setState(() => _pollControllers.add(TextEditingController())), child: const Text('+ Вариант'))
@@ -503,6 +529,7 @@ class PostCard extends StatelessWidget {
   final VoidCallback onDelete;
   final VoidCallback onEdit;
   final VoidCallback onComment;
+  final VoidCallback onVote;
 
   const PostCard({
     super.key, 
@@ -510,7 +537,8 @@ class PostCard extends StatelessWidget {
     required this.onLike, 
     required this.onDelete, 
     required this.onEdit, 
-    required this.onComment
+    required this.onComment,
+    required this.onVote,
   });
 
   @override
@@ -526,7 +554,6 @@ class PostCard extends StatelessWidget {
               const SizedBox(width: 10), 
               Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(post.username, style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)), Text(post.timeAgo, style: TextStyle(color: AppColors.textSub, fontSize: 11))]), 
               const Spacer(), 
-              // ТРОЕТОЧИЕ С МЕНЮ
               PopupMenuButton<String>(
                 icon: Icon(Icons.more_horiz, color: AppColors.textSub),
                 color: AppColors.card,
@@ -543,13 +570,80 @@ class PostCard extends StatelessWidget {
           ),
           if (post.text.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 12), child: Text(post.text, style: TextStyle(color: AppColors.text, fontSize: 15))),
           if (post.imagePath != null || post.fileName != null) Padding(padding: const EdgeInsets.only(top: 12), child: ClipRRect(borderRadius: BorderRadius.circular(12), child: _buildMedia(post))),
-          if (post.pollOptions != null) Padding(padding: const EdgeInsets.only(top: 12), child: Column(children: post.pollOptions!.map((o) => Container(width: double.infinity, margin: const EdgeInsets.only(bottom: 8), padding: const EdgeInsets.all(12), decoration: BoxDecoration(border: Border.all(color: AppColors.border), borderRadius: BorderRadius.circular(10)), child: Text(o, style: TextStyle(color: AppColors.text)))).toList())),
+          
+          // ИНТЕРАКТИВНЫЙ БЛОК ОПРОСА С ПРОЦЕНТАМИ
+          if (post.pollOptions != null && post.pollVotes != null) 
+            Padding(
+              padding: const EdgeInsets.only(top: 12), 
+              child: Column(
+                children: List.generate(post.pollOptions!.length, (index) {
+                  String optionText = post.pollOptions![index];
+                  int votesCount = post.pollVotes![index];
+                  int totalVotes = post.pollVotes!.fold(0, (sum, v) => sum + v);
+                  bool hasVoted = post.votedOptionIndex != null;
+                  double percentage = totalVotes > 0 ? (votesCount / totalVotes) : 0.0;
+                  bool isSelected = post.votedOptionIndex == index;
+
+                  return GestureDetector(
+                    onTap: () {
+                      if (!hasVoted) {
+                        post.votedOptionIndex = index;
+                        post.pollVotes![index]++;
+                        onVote(); 
+                      }
+                    },
+                    child: Container(
+                      width: double.infinity,
+                      margin: const EdgeInsets.only(bottom: 8),
+                      clipBehavior: Clip.hardEdge,
+                      decoration: BoxDecoration(
+                        color: Colors.transparent,
+                        border: Border.all(color: isSelected ? Colors.blueAccent : AppColors.border),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Stack(
+                        children: [
+                          if (hasVoted)
+                            Positioned.fill(
+                              child: FractionallySizedBox(
+                                alignment: Alignment.centerLeft,
+                                widthFactor: percentage,
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    color: isSelected ? Colors.blueAccent.withOpacity(0.2) : AppColors.input.withOpacity(0.5),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Expanded(child: Text(optionText, style: TextStyle(color: AppColors.text))),
+                                if (hasVoted)
+                                  Text('${(percentage * 100).toStringAsFixed(0)}%', style: TextStyle(color: AppColors.textSub, fontWeight: FontWeight.bold)),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }),
+              )
+            ),
+            if (post.pollOptions != null && post.pollVotes != null && post.votedOptionIndex != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text('Всего голосов: ${post.pollVotes!.fold(0, (sum, v) => sum + v)}', style: TextStyle(color: AppColors.textSub, fontSize: 12)),
+              ),
+
           const SizedBox(height: 12),
           Row(
             children: [
               GestureDetector(onTap: onLike, child: Row(children: [Icon(post.isLiked ? Icons.favorite : Icons.favorite_border, color: post.isLiked ? Colors.red : AppColors.textSub, size: 20), const SizedBox(width: 5), Text('${post.likesCount}', style: TextStyle(color: AppColors.textSub))])),
               const SizedBox(width: 20),
-              // КНОПКА КОММЕНТАРИЕВ
               GestureDetector(onTap: onComment, child: Row(children: [Icon(Icons.chat_bubble_outline, color: AppColors.textSub, size: 20), const SizedBox(width: 5), Text('${post.comments.length}', style: TextStyle(color: AppColors.textSub))])),
             ],
           ),
@@ -557,9 +651,10 @@ class PostCard extends StatelessWidget {
       ),
     );
   }
+
   Widget _buildMedia(Post p) {
     if (p.mediaType == PostMediaType.image) return kIsWeb ? Image.network(p.imagePath!) : Image.file(File(p.imagePath!), fit: BoxFit.cover, width: double.infinity);
-    if (p.mediaType == PostMediaType.video) return Container(height: 200, color: Colors.black, child: const Center(child: Icon(Icons.play_circle, color: Colors.white, size: 50)));
+    if (p.mediaType == PostMediaType.video) return PostVideoPlayer(path: p.imagePath!);
     return Container(padding: const EdgeInsets.all(15), color: AppColors.input, child: Row(children: [const Icon(Icons.description, color: Colors.blueAccent), const SizedBox(width: 10), Expanded(child: Text(p.fileName ?? 'Файл', style: TextStyle(color: AppColors.text)))]));
   }
 }

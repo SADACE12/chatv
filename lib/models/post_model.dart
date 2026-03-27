@@ -12,6 +12,11 @@ class Post {
   final PostMediaType mediaType; 
   final List<String>? pollOptions;
   
+  // --- ДОБАВЛЕНО ДЛЯ ОПРОСОВ ---
+  List<int>? pollVotes; 
+  int? votedOptionIndex; 
+  // -----------------------------
+
   int likesCount;
   bool isLiked;
   List<String> comments;
@@ -25,6 +30,8 @@ class Post {
     this.fileName,
     this.mediaType = PostMediaType.none,
     this.pollOptions,
+    this.pollVotes, // Добавлено
+    this.votedOptionIndex, // Добавлено
     this.likesCount = 0,
     this.isLiked = false,
     List<String>? comments,

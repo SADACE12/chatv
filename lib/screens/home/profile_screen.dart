@@ -1,9 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../../theme/app_colors.dart'; // ПОДКЛЮЧИЛИ ЦВЕТА
+import 'dart:convert';
+import '../../theme/app_colors.dart';
+import '../../models/post_model.dart';
+import 'main_layout.dart'; // Нужен для доступа к PostCard
 
 class ProfileScreen extends StatefulWidget {
-  const ProfileScreen({super.key});
+  final List<Post> allPosts; // Добавлено для получения постов из MainLayout
+
+  const ProfileScreen({super.key, required this.allPosts});
 
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
@@ -13,6 +18,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   String userName = "AlmasGod";
   String userHandle = "@tamerlox";
   String? userEmoji;
+  bool _showLikes = false; // Переключатель Посты/Лайки
 
   @override
   void initState() {
@@ -29,6 +35,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
     });
   }
 
+  Future<void> _savePosts() async {
+    final prefs = await SharedPreferences.getInstance();
+    List<String> jsonPosts = widget.allPosts.map((p) => jsonEncode({
+      'text': p.text, 'imagePath': p.imagePath, 'fileName': p.fileName,
+      'mediaType': p.mediaType.index, 'pollOptions': p.pollOptions,
+      'pollVotes': p.pollVotes, 'votedOptionIndex': p.votedOptionIndex,
+      'likesCount': p.likesCount, 'isLiked': p.isLiked, 'comments': p.comments,
+    })).toList();
+    await prefs.setStringList('saved_posts_json', jsonPosts);
+  }
+
   void _showSettingsDialog() {
     showDialog(
       context: context,
@@ -43,6 +60,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Фильтрация постов для отображения во вкладках
+    List<Post> myPosts = widget.allPosts.where((p) => p.username == 'Вы').toList();
+    List<Post> likedPosts = widget.allPosts.where((p) => p.isLiked).toList();
+    List<Post> displayList = _showLikes ? likedPosts : myPosts;
+
     return ValueListenableBuilder<bool>(
       valueListenable: AppColors.isDarkNotifier,
       builder: (context, isDark, child) {
@@ -74,7 +96,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             decoration: BoxDecoration(
                               color: AppColors.input,
                               shape: BoxShape.circle,
-                              border: Border.all(color: AppColors.bg, width: 4), // Обводка в цвет фона
+                              border: Border.all(color: AppColors.bg, width: 4),
                             ),
                             child: Center(
                               child: Text(userEmoji ?? "😘", style: const TextStyle(fontSize: 50)),
@@ -144,29 +166,68 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       ],
                     ),
                     const SizedBox(height: 24),
+                    
+                    // ВКЛАДКИ: ПОСТЫ / ЛАЙКИ
                     Container(
                       padding: const EdgeInsets.all(4),
                       decoration: BoxDecoration(color: AppColors.card, borderRadius: BorderRadius.circular(12)),
                       child: Row(
                         children: [
                           Expanded(
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(vertical: 10),
-                              decoration: BoxDecoration(color: AppColors.input, borderRadius: BorderRadius.circular(10)),
-                              child: Center(child: Text('Посты', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold))),
+                            child: GestureDetector(
+                              onTap: () => setState(() => _showLikes = false),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(vertical: 10),
+                                decoration: BoxDecoration(color: !_showLikes ? AppColors.input : Colors.transparent, borderRadius: BorderRadius.circular(10)),
+                                child: Center(child: Text('Посты', style: TextStyle(color: !_showLikes ? AppColors.text : AppColors.textSub, fontWeight: FontWeight.bold))),
+                              ),
                             ),
                           ),
-                          Expanded(child: Center(child: Text('Лайки', style: TextStyle(color: AppColors.textSub)))),
+                          Expanded(
+                            child: GestureDetector(
+                              onTap: () => setState(() => _showLikes = true),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(vertical: 10),
+                                decoration: BoxDecoration(color: _showLikes ? AppColors.input : Colors.transparent, borderRadius: BorderRadius.circular(10)),
+                                child: Center(child: Text('Лайки', style: TextStyle(color: _showLikes ? AppColors.text : AppColors.textSub, fontWeight: FontWeight.bold))),
+                              ),
+                            ),
+                          ),
                         ],
                       ),
                     ),
-                    const SizedBox(height: 60),
-                    Center(
-                      child: Text('Нет постов', style: TextStyle(color: AppColors.textSub, fontSize: 18, fontWeight: FontWeight.bold)),
-                    ),
+                    const SizedBox(height: 20),
                   ],
                 ),
               ),
+
+              // ОТРИСОВКА СПИСКА ПОСТОВ
+              if (displayList.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 40, bottom: 40),
+                  child: Center(
+                    child: Text('Нет постов', style: TextStyle(color: AppColors.textSub, fontSize: 18, fontWeight: FontWeight.bold)),
+                  ),
+                )
+              else
+                ...displayList.map((post) => Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                  child: PostCard(
+                    post: post,
+                    onLike: () {
+                      setState(() {
+                        post.isLiked = !post.isLiked;
+                        post.isLiked ? post.likesCount++ : post.likesCount--;
+                        _savePosts();
+                      });
+                    },
+                    onDelete: () {}, 
+                    onEdit: () {},
+                    onComment: () {},
+                    onVote: () => setState(() { _savePosts(); }), 
+                  ),
+                )),
+                const SizedBox(height: 40),
             ],
           ),
         );
