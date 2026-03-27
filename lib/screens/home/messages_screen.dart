@@ -54,7 +54,13 @@ class _MessagesScreenState extends State<MessagesScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return selectedChat == null ? _buildList() : _buildRoom();
+    // ОБЕРНУЛИ В ValueListenableBuilder, ЧТОБЫ ЭКРАН СЛУШАЛ ТЕМУ
+    return ValueListenableBuilder<bool>(
+      valueListenable: AppColors.isDarkNotifier,
+      builder: (context, isDark, child) {
+        return selectedChat == null ? _buildList() : _buildRoom();
+      }
+    );
   }
 
   Widget _buildList() {
@@ -101,7 +107,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
   Widget _buildRoom() {
     return Scaffold(
       backgroundColor: AppColors.bg,
-      appBar: AppBar(backgroundColor: AppColors.sidebar, title: Text(selectedChat!.name, style: TextStyle(color: AppColors.text)), leading: IconButton(icon: const Icon(Icons.arrow_back), onPressed: () => setState(() => selectedChat = null))),
+      appBar: AppBar(backgroundColor: AppColors.sidebar, title: Text(selectedChat!.name, style: TextStyle(color: AppColors.text)), leading: IconButton(icon: Icon(Icons.arrow_back, color: AppColors.text), onPressed: () => setState(() => selectedChat = null))),
       body: Column(children: [Expanded(child: ListView.builder(itemCount: selectedChat!.messages.length, itemBuilder: (c, i) => _bubble(selectedChat!.messages[i]))), _input()]),
     );
   }
@@ -111,7 +117,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
       padding: const EdgeInsets.all(10), color: AppColors.sidebar,
       child: Row(children: [
         IconButton(icon: Icon(Icons.attach_file, color: AppColors.textSub), onPressed: _pickFile),
-        Expanded(child: TextField(controller: _msgController, style: TextStyle(color: AppColors.text), decoration: InputDecoration(hintText: 'Сообщение...', filled: true, fillColor: AppColors.input, border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide.none)))),
+        Expanded(child: TextField(controller: _msgController, style: TextStyle(color: AppColors.text), decoration: InputDecoration(hintText: 'Сообщение...', hintStyle: TextStyle(color: AppColors.textSub), filled: true, fillColor: AppColors.input, border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide.none)))),
         IconButton(icon: const Icon(Icons.send, color: Colors.blueAccent), onPressed: () {
           if (_msgController.text.isEmpty) return;
           setState(() { selectedChat!.messages.add(ChatMessage(text: _msgController.text, isMe: true, time: 'Только что')); _msgController.clear(); });
@@ -128,7 +134,8 @@ class _MessagesScreenState extends State<MessagesScreen> {
         decoration: BoxDecoration(color: m.isMe ? Colors.blueAccent : AppColors.card, borderRadius: BorderRadius.circular(15)),
         child: m.type == MessageType.image && m.filePath != null && !kIsWeb 
           ? Image.file(File(m.filePath!), width: 150) 
-          : Text(m.text, style: const TextStyle(color: Colors.white)),
+          // ИСПРАВЛЕНО: Цвет текста меняется, чтобы на белых карточках (входящих) текст был темным
+          : Text(m.text, style: TextStyle(color: m.isMe ? Colors.white : AppColors.text)),
       ),
     );
   }
