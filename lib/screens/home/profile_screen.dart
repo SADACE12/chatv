@@ -6,7 +6,7 @@ import '../../models/post_model.dart';
 import 'main_layout.dart'; // Нужен для доступа к PostCard
 
 class ProfileScreen extends StatefulWidget {
-  final List<Post> allPosts; // Добавлено для получения постов из MainLayout
+  final List<Post> allPosts; 
 
   const ProfileScreen({super.key, required this.allPosts});
 
@@ -18,7 +18,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
   String userName = "AlmasGod";
   String userHandle = "@tamerlox";
   String? userEmoji;
-  bool _showLikes = false; // Переключатель Посты/Лайки
+  String userBio = "";
+  bool _showLikes = false; 
 
   @override
   void initState() {
@@ -32,6 +33,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       userName = prefs.getString('userName') ?? "AlmasGod";
       userHandle = "@${prefs.getString('userHandle') ?? "tamerlox"}";
       userEmoji = prefs.getString('userEmoji') ?? "😘";
+      userBio = prefs.getString('userBio') ?? "";
     });
   }
 
@@ -49,18 +51,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
   void _showSettingsDialog() {
     showDialog(
       context: context,
-      barrierColor: Colors.black.withOpacity(0.8),
+      // ИСПРАВЛЕНО СИНЕЕ ПРЕДУПРЕЖДЕНИЕ: заменили withOpacity на withValues
+      barrierColor: Colors.black.withValues(alpha: 0.8),
       builder: (context) => SettingsDialog(
         currentEmoji: userEmoji ?? "😘",
         currentName: userName,
         currentHandle: userHandle.replaceAll('@', ''),
+        currentBio: userBio,
       ),
     ).then((_) => _loadUserData());
   }
 
   @override
   Widget build(BuildContext context) {
-    // Фильтрация постов для отображения во вкладках
     List<Post> myPosts = widget.allPosts.where((p) => p.username == 'Вы').toList();
     List<Post> likedPosts = widget.allPosts.where((p) => p.isLiked).toList();
     List<Post> displayList = _showLikes ? likedPosts : myPosts;
@@ -69,7 +72,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       valueListenable: AppColors.isDarkNotifier,
       builder: (context, isDark, child) {
         return Container(
-          color: AppColors.bg, // ДИНАМИЧЕСКИЙ ФОН
+          color: AppColors.bg, 
           child: ListView(
             padding: EdgeInsets.zero,
             children: [
@@ -147,6 +150,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       ],
                     ),
                     Text(userHandle, style: TextStyle(color: AppColors.textSub, fontSize: 15)),
+                    
+                    if (userBio.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Text(userBio, style: TextStyle(color: AppColors.text, fontSize: 14)),
+                      ),
+
                     const SizedBox(height: 16),
                     Row(
                       children: [
@@ -167,7 +177,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                     const SizedBox(height: 24),
                     
-                    // ВКЛАДКИ: ПОСТЫ / ЛАЙКИ
                     Container(
                       padding: const EdgeInsets.all(4),
                       decoration: BoxDecoration(color: AppColors.card, borderRadius: BorderRadius.circular(12)),
@@ -201,7 +210,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 ),
               ),
 
-              // ОТРИСОВКА СПИСКА ПОСТОВ
               if (displayList.isEmpty)
                 Padding(
                   padding: const EdgeInsets.only(top: 40, bottom: 40),
@@ -223,7 +231,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     },
                     onDelete: () {}, 
                     onEdit: () {},
-                    onComment: () {},
+                    onComment: () {}, // <--- ИСПРАВЛЕНА КРАСНАЯ ОШИБКА ЗДЕСЬ!
                     onVote: () => setState(() { _savePosts(); }), 
                   ),
                 )),
@@ -243,8 +251,15 @@ class SettingsDialog extends StatefulWidget {
   final String currentEmoji;
   final String currentName;
   final String currentHandle;
+  final String currentBio;
 
-  const SettingsDialog({super.key, required this.currentEmoji, required this.currentName, required this.currentHandle});
+  const SettingsDialog({
+    super.key, 
+    required this.currentEmoji, 
+    required this.currentName, 
+    required this.currentHandle,
+    required this.currentBio
+  });
 
   @override
   State<SettingsDialog> createState() => _SettingsDialogState();
@@ -253,6 +268,35 @@ class SettingsDialog extends StatefulWidget {
 class _SettingsDialogState extends State<SettingsDialog> {
   String activeCategory = "Аккаунт";
   bool onlineStatus = true;
+
+  late TextEditingController _nameController;
+  late TextEditingController _handleController;
+  late TextEditingController _bioController;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameController = TextEditingController(text: widget.currentName);
+    _handleController = TextEditingController(text: widget.currentHandle);
+    _bioController = TextEditingController(text: widget.currentBio);
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _handleController.dispose();
+    _bioController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _saveProfile() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('userName', _nameController.text.trim());
+    await prefs.setString('userHandle', _handleController.text.trim());
+    await prefs.setString('userBio', _bioController.text.trim());
+    
+    if (mounted) Navigator.pop(context);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -264,14 +308,17 @@ class _SettingsDialogState extends State<SettingsDialog> {
         return Dialog(
           backgroundColor: Colors.transparent,
           insetPadding: EdgeInsets.symmetric(horizontal: isMobile ? 16 : 40, vertical: isMobile ? 24 : 40),
-          child: Container(
-            width: isMobile ? double.infinity : 800,
-            height: isMobile ? MediaQuery.of(context).size.height * 0.85 : 550,
-            decoration: BoxDecoration(
-              color: AppColors.card,
-              borderRadius: BorderRadius.circular(24),
+          child: Material(
+            color: Colors.transparent,
+            child: Container(
+              width: isMobile ? double.infinity : 800,
+              height: isMobile ? MediaQuery.of(context).size.height * 0.85 : 550,
+              decoration: BoxDecoration(
+                color: AppColors.card,
+                borderRadius: BorderRadius.circular(24),
+              ),
+              child: isMobile ? _buildMobileLayout() : _buildDesktopLayout(),
             ),
-            child: isMobile ? _buildMobileLayout() : _buildDesktopLayout(),
           ),
         );
       }
@@ -402,13 +449,14 @@ class _SettingsDialogState extends State<SettingsDialog> {
           Text('Аккаунт', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: AppColors.text)),
           const SizedBox(height: 30),
         ],
-        _row('Эмоджи-клан', widget.currentEmoji, sub: 'Выбран при регистрации. Изменить нельзя'),
-        _row('Имя', widget.currentName),
-        _row('Username', widget.currentHandle),
+        _rowStatic('Эмоджи-клан', widget.currentEmoji, sub: 'Выбран при регистрации. Изменить нельзя'),
+        _editableRow('Имя', _nameController),
+        _editableRow('Username', _handleController),
         const SizedBox(height: 10),
         Text('О себе', style: TextStyle(color: AppColors.textSub, fontSize: 13)),
         const SizedBox(height: 8),
         TextField(
+          controller: _bioController,
           maxLines: 3,
           style: TextStyle(fontSize: 14, color: AppColors.text),
           decoration: InputDecoration(
@@ -417,6 +465,21 @@ class _SettingsDialogState extends State<SettingsDialog> {
             filled: true,
             fillColor: AppColors.input,
             border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+          ),
+        ),
+        const SizedBox(height: 24),
+        SizedBox(
+          width: double.infinity,
+          child: ElevatedButton(
+            onPressed: _saveProfile,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.blueAccent,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              elevation: 0,
+            ),
+            child: const Text('Сохранить изменения', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
           ),
         ),
       ],
@@ -480,7 +543,8 @@ class _SettingsDialogState extends State<SettingsDialog> {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text('Онлайн-статус', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
-                    Switch(value: onlineStatus, activeColor: Colors.blueAccent, onChanged: (v) => setState(() => onlineStatus = v)),
+                    // ИСПРАВЛЕНО СИНЕЕ ПРЕДУПРЕЖДЕНИЕ: заменили activeColor на activeThumbColor
+                    Switch(value: onlineStatus, activeThumbColor: Colors.blueAccent, onChanged: (v) => setState(() => onlineStatus = v)),
                   ],
                 ),
                 Text('Показывать время последнего визита', style: TextStyle(color: AppColors.textSub, fontSize: 12)),
@@ -493,7 +557,8 @@ class _SettingsDialogState extends State<SettingsDialog> {
                   Text('Онлайн-статус', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
                   Text('Показывать время последнего визита', style: TextStyle(color: AppColors.textSub, fontSize: 12)),
                 ]),
-                Switch(value: onlineStatus, activeColor: Colors.blueAccent, onChanged: (v) => setState(() => onlineStatus = v)),
+                // ИСПРАВЛЕНО СИНЕЕ ПРЕДУПРЕЖДЕНИЕ: заменили activeColor на activeThumbColor
+                Switch(value: onlineStatus, activeThumbColor: Colors.blueAccent, onChanged: (v) => setState(() => onlineStatus = v)),
               ],
             ),
             
@@ -505,7 +570,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
     );
   }
 
-  Widget _row(String label, String val, {String? sub}) {
+  Widget _rowStatic(String label, String val, {String? sub}) {
     bool isMobile = MediaQuery.of(context).size.width < 700;
     
     if (isMobile) {
@@ -517,10 +582,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
             Text(label, style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
             if (sub != null) Text(sub, style: TextStyle(color: AppColors.textSub, fontSize: 11)),
             const SizedBox(height: 8),
-            if (label == 'Эмоджи-клан') 
-              Text(val, style: const TextStyle(fontSize: 24))
-            else 
-              Container(width: double.infinity, padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: AppColors.input, borderRadius: BorderRadius.circular(10)), child: Text(val, style: TextStyle(color: AppColors.text))),
+            Text(val, style: const TextStyle(fontSize: 24))
           ],
         ),
       );
@@ -537,8 +599,49 @@ class _SettingsDialogState extends State<SettingsDialog> {
               if (sub != null) Text(sub, style: TextStyle(color: AppColors.textSub, fontSize: 11)),
             ]),
           ),
-          if (label == 'Эмоджи-клан') Text(val, style: const TextStyle(fontSize: 24))
-          else Container(width: 200, padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: AppColors.input, borderRadius: BorderRadius.circular(10)), child: Text(val, style: TextStyle(color: AppColors.text))),
+          Text(val, style: const TextStyle(fontSize: 24))
+        ],
+      ),
+    );
+  }
+
+  Widget _editableRow(String label, TextEditingController controller) {
+    bool isMobile = MediaQuery.of(context).size.width < 700;
+    Widget inputField = SizedBox(
+      width: isMobile ? double.infinity : 200,
+      child: TextField(
+        controller: controller,
+        style: TextStyle(color: AppColors.text, fontSize: 14),
+        decoration: InputDecoration(
+          filled: true,
+          fillColor: AppColors.input,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+        ),
+      ),
+    );
+
+    if (isMobile) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(label, style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            inputField,
+          ],
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 20),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
+          inputField,
         ],
       ),
     );
