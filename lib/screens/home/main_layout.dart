@@ -7,6 +7,7 @@ import 'dart:convert';
 import 'dart:async'; 
 import 'package:flutter/foundation.dart' show kIsWeb; 
 import 'package:video_player/video_player.dart';
+import 'package:supabase_flutter/supabase_flutter.dart'; 
 
 import '../../models/post_model.dart';
 import '../auth/login_screen.dart';
@@ -22,6 +23,9 @@ class MainLayout extends StatefulWidget {
 }
 
 class _MainLayoutState extends State<MainLayout> {
+  final supabase = Supabase.instance.client;
+  String myName = "Вы"; // Имя текущего пользователя
+
   final TextEditingController _postController = TextEditingController();
   final ImagePicker _picker = ImagePicker();
   
@@ -37,31 +41,118 @@ class _MainLayoutState extends State<MainLayout> {
   @override
   void initState() {
     super.initState();
+    _initData();
+  }
+
+  // Загружаем имя пользователя, а затем посты
+  Future<void> _initData() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) {
+      setState(() {
+        myName = prefs.getString('userName') ?? "Аноним";
+      });
+    }
     _loadPosts();
   }
 
+  // ==========================================
+  // ЗАГРУЗКА ПОСТОВ + ЛАЙКОВ + КОММЕНТАРИЕВ
+  // ==========================================
   Future<void> _loadPosts() async {
-    final prefs = await SharedPreferences.getInstance();
-    final List<String>? jsonPosts = prefs.getStringList('saved_posts_json_v3');
-    if (jsonPosts != null) {
-      setState(() {
-        posts = jsonPosts.map((jsonStr) {
-          final map = jsonDecode(jsonStr);
-          return Post(
-            username: map['username'] ?? 'Вы', avatarColor: Colors.orange, timeAgo: 'ранее',
-            text: map['text'] ?? '', imagePath: map['imagePath'], fileName: map['fileName'],
-            mediaType: PostMediaType.values[map['mediaType'] ?? 0],
-            pollOptions: map['pollOptions'] != null ? List<String>.from(map['pollOptions']) : null,
-            pollVotes: map['pollVotes'] != null ? List<int>.from(map['pollVotes']) : null,
-            votedOptionIndex: map['votedOptionIndex'],
-            likesCount: map['likesCount'] ?? 0, isLiked: map['isLiked'] ?? false,
-            comments: map['comments'] != null ? List<String>.from(map['comments']) : [],
-          );
-        }).toList();
-      });
+    try {
+      // Запрашиваем посты и связанные данные из таблиц likes и comments
+      final data = await supabase
+          .from('posts')
+          .select('*, likes(username), comments(*)')
+          .order('created_at', ascending: false);
+
+      if (mounted) {
+        setState(() {
+          posts = (data as List).map((map) {
+            final List likesList = map['likes'] ?? [];
+            final List commentsList = map['comments'] ?? [];
+
+            return Post(
+              id: map['id'],
+              username: map['username'] ?? 'Аноним',
+              avatarColor: Color(map['avatar_color'] ?? Colors.orange.value), 
+              createdAt: DateTime.parse(map['created_at']), 
+              text: map['text'] ?? '', 
+              imagePath: map['image_path'], 
+              fileName: map['file_name'],
+              mediaType: PostMediaType.values[map['media_type'] ?? 0],
+              likesCount: likesList.length,
+              // Проверяем, лайкали ли мы этот пост лично
+              isLiked: likesList.any((like) => like['username'] == myName),
+              // Превращаем список из БД в наш формат "Имя||Текст"
+              comments: commentsList.map((c) => "${c['username']}||${c['text']}").toList(),
+            );
+          }).toList();
+        });
+      }
+    } catch (e) {
+      print('Ошибка при загрузке данных из БД: $e');
     }
   }
 
+  // ==========================================
+  // ЛАЙК (ОБЛАКО)
+  // ==========================================
+  void _toggleLike(int index) async {
+    final post = posts[index];
+    final postId = post.id;
+    if (postId == null) return;
+
+    final bool wasLiked = post.isLiked;
+
+    // Мгновенно обновляем интерфейс для плавности
+    setState(() {
+      if (wasLiked) {
+        post.isLiked = false;
+        post.likesCount--;
+      } else {
+        post.isLiked = true;
+        post.likesCount++;
+      }
+    });
+
+    try {
+      if (wasLiked) {
+        // Удаляем запись из таблицы лайков
+        await supabase.from('likes').delete().eq('post_id', postId).eq('username', myName);
+      } else {
+        // Добавляем запись в таблицу лайков
+        await supabase.from('likes').insert({'post_id': postId, 'username': myName});
+      }
+    } catch (e) {
+      print('Ошибка при обработке лайка: $e');
+    }
+  }
+
+  // ==========================================
+  // КОММЕНТАРИЙ (ОБЛАКО)
+  // ==========================================
+  Future<void> _addComment(int index, String commentText) async {
+    final postId = posts[index].id;
+    if (postId == null || commentText.isEmpty) return;
+
+    try {
+      await supabase.from('comments').insert({
+        'post_id': postId,
+        'username': myName,
+        'text': commentText,
+      });
+      
+      // Обновляем список локально, чтобы сразу увидеть коммент
+      setState(() {
+        posts[index].comments.add("$myName||$commentText");
+      });
+    } catch (e) {
+      print('Ошибка при отправке комментария: $e');
+    }
+  }
+
+  // Локальное сохранение (оставляем для совместимости, хотя всё уже в БД)
   Future<void> _savePosts() async {
     final prefs = await SharedPreferences.getInstance();
     List<String> jsonPosts = posts.map((p) => jsonEncode({
@@ -84,12 +175,26 @@ class _MainLayoutState extends State<MainLayout> {
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена', style: TextStyle(color: Colors.grey))),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-            onPressed: () {
+            onPressed: () async {
+              final postToDelete = posts[index];
+              final postId = postToDelete.id;
+
+              Navigator.pop(context);
+
+              if (postId == null) return;
+
               setState(() {
                 posts.removeAt(index);
-                _savePosts();
               });
-              Navigator.pop(context);
+
+              try {
+                await supabase.from('posts').delete().eq('id', postId);
+              } catch (e) {
+                setState(() {
+                  posts.insert(index, postToDelete);
+                });
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка БД: $e'), backgroundColor: Colors.red));
+              }
             },
             child: const Text('Удалить', style: TextStyle(color: Colors.white)),
           ),
@@ -100,9 +205,10 @@ class _MainLayoutState extends State<MainLayout> {
 
   void _editPost(int index) {
     TextEditingController editController = TextEditingController(text: posts[index].text);
+    
     showDialog(
-      context: context,
-      builder: (context) {
+      context: context, 
+      builder: (dialogContext) {
         return AlertDialog(
           backgroundColor: const Color(0xFF1E1E1E),
           title: const Text('Редактировать', style: TextStyle(color: Colors.white)),
@@ -113,14 +219,24 @@ class _MainLayoutState extends State<MainLayout> {
             maxLines: null,
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена', style: TextStyle(color: Colors.grey))),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext), 
+              child: const Text('Отмена', style: TextStyle(color: Colors.grey))
+            ),
             ElevatedButton(
-              onPressed: () {
-                setState(() {
-                  posts[index].text = editController.text;
-                  _savePosts();
-                });
-                Navigator.pop(context);
+              onPressed: () async {
+                final newText = editController.text.trim();
+                final postId = posts[index].id;
+                Navigator.pop(dialogContext);
+
+                if (postId == null) return;
+
+                try {
+                  await supabase.from('posts').update({'text': newText}).eq('id', postId);
+                  if (mounted) setState(() => posts[index].text = newText);
+                } catch (e) {
+                  if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка БД: $e'), backgroundColor: Colors.red));
+                }
               },
               style: ElevatedButton.styleFrom(backgroundColor: Colors.white, foregroundColor: Colors.black),
               child: const Text('Сохранить'),
@@ -131,18 +247,9 @@ class _MainLayoutState extends State<MainLayout> {
     );
   }
 
-  // =====================================
-  // ИСПРАВЛЕННЫЙ БЛОК КОММЕНТАРИЕВ
-  // =====================================
-  void _showComments(int index) async {
-    // Получаем реальное имя пользователя из памяти
-    final prefs = await SharedPreferences.getInstance();
-    String currentUserName = prefs.getString('userName') ?? "Вы";
-
+  void _showComments(int index) {
     TextEditingController commentController = TextEditingController();
     
-    if (!mounted) return;
-
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1E1E1E),
@@ -168,21 +275,20 @@ class _MainLayoutState extends State<MainLayout> {
                           : ListView.builder(
                               itemCount: posts[index].comments.length,
                               itemBuilder: (c, i) {
-                                // Парсим комментарий: вытаскиваем Имя и Текст
                                 String rawText = posts[index].comments[i];
-                                String authorName = currentUserName; // По умолчанию
-                                String commentText = rawText;
+                                String author = "Аноним";
+                                String text = rawText;
 
                                 if (rawText.contains('||')) {
                                   final parts = rawText.split('||');
-                                  authorName = parts[0];
-                                  commentText = parts[1];
+                                  author = parts[0];
+                                  text = parts[1];
                                 }
 
                                 return ListTile(
                                   leading: const CircleAvatar(radius: 16, backgroundColor: Colors.orange, child: Icon(Icons.person, size: 16, color: Colors.white)),
-                                  title: Text(authorName, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
-                                  subtitle: Text(commentText, style: const TextStyle(color: Colors.grey)),
+                                  title: Text(author, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+                                  subtitle: Text(text, style: const TextStyle(color: Colors.grey)),
                                 );
                               },
                             ),
@@ -194,7 +300,7 @@ class _MainLayoutState extends State<MainLayout> {
                             controller: commentController,
                             style: const TextStyle(color: Colors.white),
                             decoration: InputDecoration(
-                              hintText: 'Написать комментарий...',
+                              hintText: 'Написать...',
                               hintStyle: const TextStyle(color: Colors.grey),
                               filled: true,
                               fillColor: const Color(0xFF333333),
@@ -205,13 +311,9 @@ class _MainLayoutState extends State<MainLayout> {
                         ),
                         IconButton(
                           icon: const Icon(Icons.send, color: Colors.blueAccent),
-                          onPressed: () {
+                          onPressed: () async {
                             if (commentController.text.trim().isNotEmpty) {
-                              setState(() {
-                                // Сохраняем коммент склеивая "Имя||Текст"
-                                posts[index].comments.add("$currentUserName||${commentController.text.trim()}");
-                                _savePosts();
-                              });
+                              await _addComment(index, commentController.text.trim());
                               setSheetState(() {}); 
                               commentController.clear();
                             }
@@ -281,20 +383,58 @@ class _MainLayoutState extends State<MainLayout> {
     if (_isCreatingPoll && (text.isEmpty || currentPollOptions.length < 2)) return;
     if (text.isEmpty && _pickedFile == null && currentPollOptions.isEmpty) return;
     
-    // Получаем никнейм автора для поста
-    final prefs = await SharedPreferences.getInstance();
-    String myName = prefs.getString('userName') ?? "Вы";
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Публикация... Пожалуйста, подождите'), duration: Duration(seconds: 2)),
+    );
+
+    try {
+      String? uploadedUrl;
+
+      if (_pickedFile != null) {
+        final bytes = await _pickedFile!.readAsBytes();
+        final fileExtension = _pickedFile!.name.split('.').last;
+        final fileName = '${DateTime.now().millisecondsSinceEpoch}.$fileExtension';
+        await supabase.storage.from('post_media').uploadBinary(fileName, bytes);
+        uploadedUrl = supabase.storage.from('post_media').getPublicUrl(fileName);
+      }
+
+      final response = await supabase.from('posts').insert({
+        'username': myName,
+        'avatar_color': Colors.orange.value, 
+        'text': text,
+        'media_type': _currentMediaType.index,
+        'image_path': uploadedUrl,
+        'file_name': _pickedFileName,
+      }).select();
+
+      setState(() {
+        posts.insert(0, Post(
+          id: response[0]['id'],
+          username: myName, 
+          avatarColor: Colors.orange, 
+          createdAt: DateTime.parse(response[0]['created_at']), 
+          text: text,
+          imagePath: uploadedUrl, 
+          fileName: _pickedFileName, 
+          mediaType: _currentMediaType,
+          pollOptions: _isCreatingPoll ? currentPollOptions : null,
+          pollVotes: _isCreatingPoll ? List.filled(currentPollOptions.length, 0) : null,
+          comments: [],
+          likesCount: 0,
+          isLiked: false,
+        ));
+      });
+
+    } catch (e) {
+      print('Ошибка при публикации: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Ошибка отправки: $e'), backgroundColor: Colors.red),
+      );
+    }
 
     setState(() {
-      posts.insert(0, Post(
-        username: myName, avatarColor: Colors.orange, timeAgo: 'только что', text: text,
-        imagePath: _pickedFile?.path, fileName: _pickedFileName, mediaType: _currentMediaType,
-        pollOptions: _isCreatingPoll ? currentPollOptions : null,
-        pollVotes: _isCreatingPoll ? List.filled(currentPollOptions.length, 0) : null,
-      ));
       _postController.clear(); _pickedFile = null; _pickedFileName = null; _currentMediaType = PostMediaType.none;
       _isCreatingPoll = false; _pollControllers = [TextEditingController(), TextEditingController()];
-      _savePosts();
       FocusScope.of(context).unfocus();
     });
   }
@@ -387,11 +527,11 @@ class _MainLayoutState extends State<MainLayout> {
             padding: const EdgeInsets.only(bottom: 12),
             child: PostCard(
               post: entry.value,
-              onLike: () => setState(() { entry.value.isLiked = !entry.value.isLiked; entry.value.isLiked ? entry.value.likesCount++ : entry.value.likesCount--; _savePosts(); }),
+              onLike: () => _toggleLike(entry.key),
               onDelete: () => _deletePost(entry.key),
               onEdit: () => _editPost(entry.key),
-              onComment: () => _showComments(entry.key), // ВЫЗЫВАЕМ КОММЕНТАРИИ
-              onVote: () => setState(() { _savePosts(); }), 
+              onComment: () => _showComments(entry.key),
+              onVote: () => setState(() {}), 
             ),
           )),
       ],
@@ -494,31 +634,122 @@ class _MainLayoutState extends State<MainLayout> {
   }
 }
 
-// ==========================================
-// ПОЛНОЭКРАННЫЙ ПРОСМОТР ФОТО
-// ==========================================
+class PostCard extends StatelessWidget {
+  final Post post;
+  final VoidCallback onLike;
+  final VoidCallback onDelete;
+  final VoidCallback onEdit;
+  final VoidCallback onComment;
+  final VoidCallback onVote;
+
+  const PostCard({super.key, required this.post, required this.onLike, required this.onDelete, required this.onEdit, required this.onComment, required this.onVote});
+  
+  Widget _buildMedia(Post p, BuildContext context) {
+    bool isNetworkUrl = p.imagePath != null && p.imagePath!.startsWith('http');
+
+    if (p.mediaType == PostMediaType.image) {
+      return GestureDetector(
+        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => FullScreenImageViewer(imagePath: p.imagePath!))),
+        child: isNetworkUrl 
+            ? Image.network(p.imagePath!, fit: BoxFit.cover, width: double.infinity) 
+            : Image.file(File(p.imagePath!), fit: BoxFit.cover, width: double.infinity),
+      );
+    }
+    if (p.mediaType == PostMediaType.video) return PostVideoPlayer(path: p.imagePath!);
+    return Container(padding: const EdgeInsets.all(15), color: const Color(0xFF333333), child: Row(children: [const Icon(Icons.description, color: Colors.blueAccent), const SizedBox(width: 10), Expanded(child: Text(p.fileName ?? 'Файл', style: const TextStyle(color: Colors.white)))]));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(16)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              CircleAvatar(backgroundColor: post.avatarColor, radius: 20),
+              const SizedBox(width: 12),
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(post.username, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.white)),
+                Text('${post.createdAt.hour}:${post.createdAt.minute.toString().padLeft(2, '0')}', style: const TextStyle(color: Colors.grey, fontSize: 12)),
+              ]),
+              const Spacer(),
+              PopupMenuButton<String>(
+                icon: const Icon(Icons.more_horiz, color: Colors.grey),
+                color: const Color(0xFF333333),
+                onSelected: (val) {
+                  if (val == 'edit') onEdit();
+                  if (val == 'delete') onDelete();
+                },
+                itemBuilder: (c) => [
+                  const PopupMenuItem(value: 'edit', child: Text('Редактировать', style: TextStyle(color: Colors.white))),
+                  const PopupMenuItem(value: 'delete', child: Text('Удалить', style: TextStyle(color: Colors.redAccent))),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (post.text.isNotEmpty) Text(post.text, style: const TextStyle(fontSize: 15, height: 1.4, color: Colors.white)),
+          
+          if (post.imagePath != null || post.fileName != null) 
+            Padding(
+              padding: const EdgeInsets.only(top: 12), 
+              child: ClipRRect(borderRadius: BorderRadius.circular(12), child: _buildMedia(post, context))
+            ),
+            
+          const SizedBox(height: 16),
+          Row(children: [
+            GestureDetector(
+              onTap: onLike, 
+              child: Row(children: [
+                Icon(post.isLiked ? Icons.favorite : Icons.favorite_border, size: 20, color: post.isLiked ? Colors.red : Colors.grey), 
+                const SizedBox(width: 6), 
+                Text('${post.likesCount}', style: const TextStyle(color: Colors.grey))
+              ])
+            ),
+            const SizedBox(width: 20),
+            
+            GestureDetector(
+              onTap: onComment,
+              child: Row(children: [
+                const Icon(Icons.mode_comment_outlined, size: 20, color: Colors.grey),
+                const SizedBox(width: 6), 
+                Text('${post.comments.length}', style: const TextStyle(color: Colors.grey))
+              ])
+            ),
+            
+            const Spacer(),
+            const Icon(Icons.remove_red_eye_outlined, size: 18, color: Colors.grey),
+            const SizedBox(width: 6), const Text('1', style: TextStyle(color: Colors.grey)),
+          ]),
+        ],
+      ),
+    );
+  }
+}
+
 class FullScreenImageViewer extends StatelessWidget {
   final String imagePath;
   const FullScreenImageViewer({super.key, required this.imagePath});
 
   @override
   Widget build(BuildContext context) {
+    bool isNetworkUrl = imagePath.startsWith('http');
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(backgroundColor: Colors.black, iconTheme: const IconThemeData(color: Colors.white), elevation: 0),
       body: Center(
         child: InteractiveViewer(
           panEnabled: true, minScale: 0.5, maxScale: 4.0,
-          child: kIsWeb ? Image.network(imagePath) : Image.file(File(imagePath)),
+          child: isNetworkUrl ? Image.network(imagePath) : Image.file(File(imagePath)),
         ),
       ),
     );
   }
 }
 
-// ==========================================
-// ИНТЕРАКТИВНЫЙ ВИДЕОПЛЕЕР 
-// ==========================================
 class PostVideoPlayer extends StatefulWidget {
   final String path;
   const PostVideoPlayer({super.key, required this.path});
@@ -534,7 +765,8 @@ class _PostVideoPlayerState extends State<PostVideoPlayer> {
   @override
   void initState() { 
     super.initState(); 
-    if (kIsWeb) {
+    bool isNetworkUrl = widget.path.startsWith('http');
+    if (isNetworkUrl || kIsWeb) {
       _controller = VideoPlayerController.networkUrl(Uri.parse(widget.path));
     } else {
       _controller = VideoPlayerController.file(File(widget.path));
@@ -596,14 +828,12 @@ class _PostVideoPlayerState extends State<PostVideoPlayer> {
                 child: Container(color: Colors.transparent),
               ),
             ),
-            
             IgnorePointer(
               child: AspectRatio(
                 aspectRatio: _controller.value.aspectRatio, 
                 child: VideoPlayer(_controller)
               ),
             ),
-            
             if (_showControls) ...[
               GestureDetector(
                 behavior: HitTestBehavior.opaque,
@@ -617,62 +847,33 @@ class _PostVideoPlayerState extends State<PostVideoPlayer> {
                   ),
                 ),
               ),
-              
               Positioned(
                 bottom: 0, left: 0, right: 0,
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: () {}, 
-                  child: Container(
-                    color: Colors.black54,
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: VideoProgressIndicator(
-                            _controller, 
-                            allowScrubbing: true,
-                            colors: const VideoProgressColors(playedColor: Colors.blueAccent, backgroundColor: Colors.white54),
-                          ),
+                child: Container(
+                  color: Colors.black54,
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: VideoProgressIndicator(
+                          _controller, 
+                          allowScrubbing: true,
+                          colors: const VideoProgressColors(playedColor: Colors.blueAccent, backgroundColor: Colors.white54),
                         ),
-                        const SizedBox(width: 10),
-                        Icon(_controller.value.volume > 0 ? Icons.volume_up : Icons.volume_off, color: Colors.white, size: 18),
-                        
-                        SizedBox(
-                          width: 70,
-                          child: SliderTheme(
-                            data: SliderTheme.of(context).copyWith(
-                              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                              overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
-                              trackHeight: 2,
-                            ),
-                            child: Slider(
-                              value: _controller.value.volume,
-                              min: 0.0,
-                              max: 1.0,
-                              activeColor: Colors.blueAccent,
-                              inactiveColor: Colors.white54,
-                              onChanged: (val) {
-                                _controller.setVolume(val);
-                                if (_controller.value.isPlaying) _startHideTimer(); 
-                              },
-                            ),
-                          ),
-                        ),
-                        
-                        IconButton(
-                          constraints: const BoxConstraints(),
-                          padding: EdgeInsets.zero,
-                          icon: const Icon(Icons.fullscreen, color: Colors.white, size: 20),
-                          onPressed: () {
-                            _hideTimer?.cancel();
-                            Navigator.push(context, MaterialPageRoute(builder: (_) => FullScreenVideoPage(controller: _controller))).then((_) {
-                              if (_controller.value.isPlaying) _startHideTimer();
-                            });
-                          },
-                        ),
-                      ],
-                    ),
+                      ),
+                      const SizedBox(width: 10),
+                      IconButton(
+                        constraints: const BoxConstraints(),
+                        padding: EdgeInsets.zero,
+                        icon: const Icon(Icons.fullscreen, color: Colors.white, size: 20),
+                        onPressed: () {
+                          _hideTimer?.cancel();
+                          Navigator.push(context, MaterialPageRoute(builder: (_) => FullScreenVideoPage(controller: _controller))).then((_) {
+                            if (_controller.value.isPlaying) _startHideTimer();
+                          });
+                        },
+                      ),
+                    ],
                   ),
                 ),
               ),
@@ -683,9 +884,6 @@ class _PostVideoPlayerState extends State<PostVideoPlayer> {
   }
 }
 
-// ==========================================
-// ПОЛНОЭКРАННЫЙ ВИДЕОПЛЕЕР
-// ==========================================
 class FullScreenVideoPage extends StatefulWidget {
   final VideoPlayerController controller;
   const FullScreenVideoPage({super.key, required this.controller});
@@ -759,17 +957,13 @@ class _FullScreenVideoPageState extends State<FullScreenVideoPage> {
                 child: Container(color: Colors.transparent),
               ),
             ),
-            
             IgnorePointer(
               child: AspectRatio(
                 aspectRatio: widget.controller.value.aspectRatio,
                 child: VideoPlayer(widget.controller),
               ),
             ),
-            
             if (_showControls) ...[
-              IgnorePointer(child: Container(color: Colors.black38)),
-              
               Positioned(
                 top: 10, left: 10,
                 child: IconButton(
@@ -777,71 +971,13 @@ class _FullScreenVideoPageState extends State<FullScreenVideoPage> {
                   onPressed: () => Navigator.pop(context),
                 ),
               ),
-              
               GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onTap: _togglePlay,
-                child: Container(
-                  padding: const EdgeInsets.all(40),
-                  child: CircleAvatar(
-                    backgroundColor: Colors.black54, 
-                    radius: 40, 
-                    child: Icon(widget.controller.value.isPlaying ? Icons.pause : Icons.play_arrow, color: Colors.white, size: 45)
-                  ),
-                ),
-              ),
-              
-              Positioned(
-                bottom: 20, left: 20, right: 20,
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: () {}, 
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      VideoProgressIndicator(
-                        widget.controller, 
-                        allowScrubbing: true,
-                        colors: const VideoProgressColors(playedColor: Colors.blueAccent, backgroundColor: Colors.white54),
-                      ),
-                      const SizedBox(height: 10),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Row(
-                            children: [
-                              Icon(widget.controller.value.volume > 0 ? Icons.volume_up : Icons.volume_off, color: Colors.white),
-                              SizedBox(
-                                width: 120,
-                                child: SliderTheme(
-                                  data: SliderTheme.of(context).copyWith(
-                                    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                                    overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
-                                    trackHeight: 3,
-                                  ),
-                                  child: Slider(
-                                    value: widget.controller.value.volume,
-                                    min: 0.0,
-                                    max: 1.0,
-                                    activeColor: Colors.blueAccent,
-                                    inactiveColor: Colors.white54,
-                                    onChanged: (val) {
-                                      widget.controller.setVolume(val);
-                                      if (widget.controller.value.isPlaying) _startHideTimer();
-                                    },
-                                  ),
-                                ),
-                              )
-                            ],
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.fullscreen_exit, color: Colors.white, size: 28),
-                            onPressed: () => Navigator.pop(context),
-                          ),
-                        ],
-                      )
-                    ],
-                  ),
+                child: CircleAvatar(
+                  backgroundColor: Colors.black54, 
+                  radius: 40, 
+                  child: Icon(widget.controller.value.isPlaying ? Icons.pause : Icons.play_arrow, color: Colors.white, size: 45)
                 ),
               ),
             ],
@@ -852,7 +988,6 @@ class _FullScreenVideoPageState extends State<FullScreenVideoPage> {
   }
 }
 
-// ОБНОВЛЕННЫЙ САЙДБАР С ОБРАБОТКОЙ НАЖАТИЙ
 class LeftSidebarContent extends StatelessWidget {
   final int activeIdx;
   final Function(int) onSelect;
@@ -871,7 +1006,6 @@ class LeftSidebarContent extends StatelessWidget {
           const SizedBox(height: 40),
           _item(Icons.person_outline, 'Профиль', activeIdx == 0, () => onSelect(0)),
           _item(Icons.feed, 'Лента', activeIdx == 1, () => onSelect(1)),
-          _item(Icons.search, 'Поиск', false, () {}),
           _item(Icons.notifications_none, 'Сообщения', activeIdx == 2, () => onSelect(2)),
           const Spacer(),
           ListTile(
@@ -933,166 +1067,6 @@ class ClanEmojisPanel extends StatelessWidget {
         ),
       ),
     );
-  }
-}
-
-class PostCard extends StatelessWidget {
-  final Post post;
-  final VoidCallback onLike;
-  final VoidCallback onDelete;
-  final VoidCallback onEdit;
-  final VoidCallback onComment;
-  final VoidCallback onVote;
-
-  const PostCard({super.key, required this.post, required this.onLike, required this.onDelete, required this.onEdit, required this.onComment, required this.onVote});
-  
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(16)),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              CircleAvatar(backgroundColor: post.avatarColor, radius: 20),
-              const SizedBox(width: 12),
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(post.username, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.white)),
-                Text(post.timeAgo, style: const TextStyle(color: Colors.grey, fontSize: 12)),
-              ]),
-              const Spacer(),
-              PopupMenuButton<String>(
-                icon: const Icon(Icons.more_horiz, color: Colors.grey),
-                color: const Color(0xFF333333),
-                onSelected: (val) {
-                  if (val == 'edit') onEdit();
-                  if (val == 'delete') onDelete();
-                },
-                itemBuilder: (c) => [
-                  const PopupMenuItem(value: 'edit', child: Text('Редактировать', style: TextStyle(color: Colors.white))),
-                  const PopupMenuItem(value: 'delete', child: Text('Удалить', style: TextStyle(color: Colors.redAccent))),
-                ],
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          if (post.text.isNotEmpty) Text(post.text, style: const TextStyle(fontSize: 15, height: 1.4, color: Colors.white)),
-          
-          if (post.imagePath != null || post.fileName != null) 
-            Padding(
-              padding: const EdgeInsets.only(top: 12), 
-              child: ClipRRect(borderRadius: BorderRadius.circular(12), child: _buildMedia(post, context))
-            ),
-            
-          if (post.pollOptions != null && post.pollVotes != null) 
-            Padding(
-              padding: const EdgeInsets.only(top: 12), 
-              child: Column(
-                children: List.generate(post.pollOptions!.length, (index) {
-                  String optionText = post.pollOptions![index];
-                  int votesCount = post.pollVotes![index];
-                  int totalVotes = post.pollVotes!.fold(0, (sum, v) => sum + v);
-                  bool hasVoted = post.votedOptionIndex != null;
-                  double percentage = totalVotes > 0 ? (votesCount / totalVotes) : 0.0;
-                  bool isSelected = post.votedOptionIndex == index;
-
-                  return GestureDetector(
-                    onTap: () {
-                      if (!hasVoted) {
-                        post.votedOptionIndex = index;
-                        post.pollVotes![index]++;
-                        onVote(); 
-                      }
-                    },
-                    child: Container(
-                      width: double.infinity,
-                      margin: const EdgeInsets.only(bottom: 8),
-                      clipBehavior: Clip.hardEdge,
-                      decoration: BoxDecoration(
-                        color: Colors.transparent,
-                        border: Border.all(color: isSelected ? Colors.blueAccent : const Color(0xFF333333)),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Stack(
-                        children: [
-                          if (hasVoted)
-                            Positioned.fill(
-                              child: FractionallySizedBox(
-                                alignment: Alignment.centerLeft,
-                                widthFactor: percentage,
-                                child: Container(
-                                  decoration: BoxDecoration(
-                                    color: isSelected ? Colors.blueAccent.withOpacity(0.2) : const Color(0xFF333333).withOpacity(0.5),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          Padding(
-                            padding: const EdgeInsets.all(12),
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Expanded(child: Text(optionText, style: const TextStyle(color: Colors.white))),
-                                if (hasVoted)
-                                  Text('${(percentage * 100).toStringAsFixed(0)}%', style: const TextStyle(color: Colors.grey, fontWeight: FontWeight.bold)),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                }),
-              )
-            ),
-            if (post.pollOptions != null && post.pollVotes != null && post.votedOptionIndex != null)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: Text('Всего голосов: ${post.pollVotes!.fold(0, (sum, v) => sum + v)}', style: const TextStyle(color: Colors.grey, fontSize: 12)),
-              ),
-
-          const SizedBox(height: 16),
-          Row(children: [
-            GestureDetector(
-              onTap: onLike, 
-              child: Row(children: [
-                Icon(post.isLiked ? Icons.favorite : Icons.favorite_border, size: 20, color: post.isLiked ? Colors.red : Colors.grey), 
-                const SizedBox(width: 6), 
-                Text('${post.likesCount}', style: const TextStyle(color: Colors.grey))
-              ])
-            ),
-            const SizedBox(width: 20),
-            
-            // КЛИКАБЕЛЬНАЯ КНОПКА КОММЕНТАРИЕВ
-            GestureDetector(
-              onTap: onComment,
-              child: Row(children: [
-                const Icon(Icons.mode_comment_outlined, size: 20, color: Colors.grey),
-                const SizedBox(width: 6), 
-                Text('${post.comments.length}', style: const TextStyle(color: Colors.grey))
-              ])
-            ),
-            
-            const Spacer(),
-            const Icon(Icons.remove_red_eye_outlined, size: 18, color: Colors.grey),
-            const SizedBox(width: 6), const Text('1', style: TextStyle(color: Colors.grey)),
-          ]),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildMedia(Post p, BuildContext context) {
-    if (p.mediaType == PostMediaType.image) {
-      return GestureDetector(
-        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => FullScreenImageViewer(imagePath: p.imagePath!))),
-        child: kIsWeb ? Image.network(p.imagePath!) : Image.file(File(p.imagePath!), fit: BoxFit.cover, width: double.infinity),
-      );
-    }
-    if (p.mediaType == PostMediaType.video) return PostVideoPlayer(path: p.imagePath!);
-    return Container(padding: const EdgeInsets.all(15), color: const Color(0xFF333333), child: Row(children: [const Icon(Icons.description, color: Colors.blueAccent), const SizedBox(width: 10), Expanded(child: Text(p.fileName ?? 'Файл', style: const TextStyle(color: Colors.white)))]));
   }
 }
 
