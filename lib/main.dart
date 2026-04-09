@@ -1,42 +1,39 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+// Убедись, что путь к экрану логина совпадает с твоей структурой папок.
+// Если у тебя пока нет LoginScreen, можешь заменить его на MainLayout.
 import 'screens/auth/login_screen.dart';
-import 'screens/home/main_layout.dart';
-import 'data/app_data.dart';
 
 void main() async {
-  // Обязательная строчка перед использованием SharedPreferences
+  // Эта строка обязательна, если мы делаем что-то асинхронное до запуска приложения
   WidgetsFlutterBinding.ensureInitialized();
-  
-  // Достаем данные из памяти браузера
-  final prefs = await SharedPreferences.getInstance();
-  final isLoggedIn = prefs.getBool('isLoggedIn') ?? false;
-  final userEmoji = prefs.getString('userEmoji');
 
-  // Если пользователь уже залогинен и у него есть эмоджи - восстанавливаем клан
-  if (isLoggedIn && userEmoji != null) {
-    AppData.activeClans[userEmoji] = (AppData.activeClans[userEmoji] ?? 0) + 1;
-  }
+  // Инициализация базы данных Supabase с твоими ключами
+  await Supabase.initialize(
+    url: 'https://cyoupnpoobemnozqcfen.supabase.co',
+    anonKey:
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN5b3VwbnBvb2JlbW5venFjZmVuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3MjYyMjYsImV4cCI6MjA5MTMwMjIyNn0.wBPVNPY0_6q_w766f-GsLeWzoja3qSOjiQeYlPijix4',
+  );
 
-  runApp(ChatVApp(isLoggedIn: isLoggedIn));
+  runApp(const MyApp());
 }
 
-class ChatVApp extends StatelessWidget {
-  final bool isLoggedIn;
-  
-  const ChatVApp({super.key, required this.isLoggedIn});
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      debugShowCheckedModeBanner: false,
       title: 'ChatV',
+      debugShowCheckedModeBanner:
+          false, // Убираем красную плашку "DEBUG" справа сверху
       theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: const Color(0xFF121212),
-        cardColor: const Color(0xFF1E1E1E),
+        scaffoldBackgroundColor: Colors.black, // Ставим черный фон по умолчанию
       ),
-      // Если в памяти есть данные о входе - сразу кидаем в ленту
-      home: isLoggedIn ? const MainLayout() : const LoginScreen(), 
+      // Стартовый экран. Если хочешь сразу тестировать чат без ввода логина/пароля,
+      // можешь поменять LoginScreen() на MainLayout()
+      home: const LoginScreen(),
     );
   }
 }
