@@ -39,6 +39,8 @@ dependencies:
   video_player: ^2.11.1
   file_picker: ^10.3.10
   supabase_flutter: ^2.12.2
+  record: ^5.0.5          # Добавлено для записи аудио
+  audioplayers: ^5.2.1    # Добавлено для воспроизведения аудио
 
 dev_dependencies:
   flutter_test:

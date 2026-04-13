@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
+import 'package:supabase_flutter/supabase_flutter.dart'; 
 import '../../theme/app_colors.dart';
 import '../../models/post_model.dart';
-import 'main_layout.dart'; // Нужен для доступа к PostCard
+import 'main_layout.dart'; 
 
 class ProfileScreen extends StatefulWidget {
   final List<Post> allPosts; 
@@ -15,8 +16,11 @@ class ProfileScreen extends StatefulWidget {
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
-  String userName = "AlmasGod";
-  String userHandle = "@tamerlox";
+  // Получаем текущего пользователя из Supabase
+  final currentUser = Supabase.instance.client.auth.currentUser;
+
+  String userName = "Загрузка...";
+  String userHandle = "@loading";
   String? userEmoji;
   String userBio = "";
   bool _showLikes = false; 
@@ -29,9 +33,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> _loadUserData() async {
     final prefs = await SharedPreferences.getInstance();
+    
+    // Берем первую часть почты как дефолтное значение
+    String defaultName = currentUser?.email?.split('@')[0] ?? "user";
+
     setState(() {
-      userName = prefs.getString('userName') ?? "AlmasGod";
-      userHandle = "@${prefs.getString('userHandle') ?? "tamerlox"}";
+      // Имя берем из настроек, либо из Email
+      userName = prefs.getString('userName') ?? defaultName;
+      // Никнейм (handle) берем из настроек, либо из Email (маленькими буквами)
+      userHandle = "@${prefs.getString('userHandle') ?? defaultName.toLowerCase()}";
       userEmoji = prefs.getString('userEmoji') ?? "😘";
       userBio = prefs.getString('userBio') ?? "";
     });
@@ -51,7 +61,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
   void _showSettingsDialog() {
     showDialog(
       context: context,
-      // ИСПРАВЛЕНО СИНЕЕ ПРЕДУПРЕЖДЕНИЕ: заменили withOpacity на withValues
       barrierColor: Colors.black.withValues(alpha: 0.8),
       builder: (context) => SettingsDialog(
         currentEmoji: userEmoji ?? "😘",
@@ -64,7 +73,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   @override
   Widget build(BuildContext context) {
-    List<Post> myPosts = widget.allPosts.where((p) => p.username == 'Вы').toList();
+    // Фильтруем посты по user_id из Supabase
+    List<Post> myPosts = widget.allPosts.where((p) => p.userId != null && p.userId == currentUser?.id).toList();
     List<Post> likedPosts = widget.allPosts.where((p) => p.isLiked).toList();
     List<Post> displayList = _showLikes ? likedPosts : myPosts;
 
@@ -160,11 +170,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     const SizedBox(height: 16),
                     Row(
                       children: [
-                        Text('0', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
-                        Text(' подписчиков', style: TextStyle(color: AppColors.textSub, fontSize: 14)),
+                        Text('${displayList.length}', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
+                        Text(' публикаций', style: TextStyle(color: AppColors.textSub, fontSize: 14)),
                         const SizedBox(width: 16),
                         Text('0', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
-                        Text(' подписок', style: TextStyle(color: AppColors.textSub, fontSize: 14)),
+                        Text(' подписчиков', style: TextStyle(color: AppColors.textSub, fontSize: 14)),
                       ],
                     ),
                     const SizedBox(height: 12),
@@ -222,16 +232,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
                   child: PostCard(
                     post: post,
+                    currentUserId: currentUser?.id, // Передаем ID текущего пользователя
                     onLike: () {
-                      setState(() {
-                        post.isLiked = !post.isLiked;
-                        post.isLiked ? post.likesCount++ : post.likesCount--;
-                        _savePosts();
-                      });
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Лайки лучше ставить в общей ленте')));
                     },
-                    onDelete: () {}, 
-                    onEdit: () {},
-                    onComment: () {}, // <--- ИСПРАВЛЕНА КРАСНАЯ ОШИБКА ЗДЕСЬ!
+                    onDelete: () {
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Удаление доступно в основной ленте')));
+                    }, 
+                    onEdit: () {
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Редактирование доступно в основной ленте')));
+                    },
+                    onComment: () {
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Перейдите в ленту, чтобы оставить комментарий')));
+                    }, 
                     onVote: () => setState(() { _savePosts(); }), 
                   ),
                 )),
@@ -543,7 +556,6 @@ class _SettingsDialogState extends State<SettingsDialog> {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text('Онлайн-статус', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
-                    // ИСПРАВЛЕНО СИНЕЕ ПРЕДУПРЕЖДЕНИЕ: заменили activeColor на activeThumbColor
                     Switch(value: onlineStatus, activeThumbColor: Colors.blueAccent, onChanged: (v) => setState(() => onlineStatus = v)),
                   ],
                 ),
@@ -557,7 +569,6 @@ class _SettingsDialogState extends State<SettingsDialog> {
                   Text('Онлайн-статус', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
                   Text('Показывать время последнего визита', style: TextStyle(color: AppColors.textSub, fontSize: 12)),
                 ]),
-                // ИСПРАВЛЕНО СИНЕЕ ПРЕДУПРЕЖДЕНИЕ: заменили activeColor на activeThumbColor
                 Switch(value: onlineStatus, activeThumbColor: Colors.blueAccent, onChanged: (v) => setState(() => onlineStatus = v)),
               ],
             ),

@@ -24,6 +24,10 @@ class MainLayout extends StatefulWidget {
 
 class _MainLayoutState extends State<MainLayout> {
   final supabase = Supabase.instance.client;
+  
+  // Получение текущего пользователя
+  User? get currentUser => supabase.auth.currentUser;
+  
   String myName = "Вы"; // Имя текущего пользователя
 
   final TextEditingController _postController = TextEditingController();
@@ -38,21 +42,59 @@ class _MainLayoutState extends State<MainLayout> {
   bool _isCreatingPoll = false;
   List<TextEditingController> _pollControllers = [TextEditingController(), TextEditingController()];
 
+  // НОВОЕ: Переменная для хранения канала связи (Realtime)
+  RealtimeChannel? _realtimeChannel;
+
   @override
   void initState() {
     super.initState();
     _initData();
   }
 
+  // НОВОЕ: Отключаем прослушку БД при выходе, чтобы не тратить ресурсы
+  @override
+  void dispose() {
+    if (_realtimeChannel != null) {
+      supabase.removeChannel(_realtimeChannel!);
+    }
+    _postController.dispose();
+    super.dispose();
+  }
+
   // Загружаем имя пользователя, а затем посты
   Future<void> _initData() async {
+    if (currentUser == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const LoginScreen()));
+      });
+      return;
+    }
+
     final prefs = await SharedPreferences.getInstance();
     if (mounted) {
       setState(() {
-        myName = prefs.getString('userName') ?? "Аноним";
+        myName = prefs.getString('userName') ?? currentUser!.email!.split('@')[0];
       });
     }
-    _loadPosts();
+    await _loadPosts(); // Ждем загрузки постов
+    _setupRealtime();   // НОВОЕ: Включаем живую ленту
+  }
+
+  // ==========================================
+  // НОВОЕ: НАСТРОЙКА ЖИВОЙ ЛЕНТЫ (REALTIME)
+  // ==========================================
+  void _setupRealtime() {
+    _realtimeChannel = supabase
+        .channel('public_changes')
+        .onPostgresChanges(
+            event: PostgresChangeEvent.all,
+            schema: 'public',
+            callback: (payload) {
+              print('Обновление в реальном времени: ${payload.eventType}');
+              // Если кто-то лайкнул, откомментил или запостил — обновляем ленту
+              _loadPosts(); 
+            })
+        .subscribe();
   }
 
   // ==========================================
@@ -74,6 +116,7 @@ class _MainLayoutState extends State<MainLayout> {
 
             return Post(
               id: map['id'],
+              userId: map['user_id'], // Читаем ID автора из базы
               username: map['username'] ?? 'Аноним',
               avatarColor: Color(map['avatar_color'] ?? Colors.orange.value), 
               createdAt: DateTime.parse(map['created_at']), 
@@ -378,6 +421,9 @@ class _MainLayoutState extends State<MainLayout> {
   }
 
   void _publishPost() async {
+    // Проверяем авторизацию перед публикацией
+    if (currentUser == null) return;
+    
     String text = _postController.text.trim();
     List<String> currentPollOptions = _pollControllers.map((c) => c.text.trim()).where((t) => t.isNotEmpty).toList();
     if (_isCreatingPoll && (text.isEmpty || currentPollOptions.length < 2)) return;
@@ -399,6 +445,7 @@ class _MainLayoutState extends State<MainLayout> {
       }
 
       final response = await supabase.from('posts').insert({
+        'user_id': currentUser!.id, // Привязываем пост к пользователю
         'username': myName,
         'avatar_color': Colors.orange.value, 
         'text': text,
@@ -410,6 +457,7 @@ class _MainLayoutState extends State<MainLayout> {
       setState(() {
         posts.insert(0, Post(
           id: response[0]['id'],
+          userId: currentUser!.id, // Записываем ID в локальный список
           username: myName, 
           avatarColor: Colors.orange, 
           createdAt: DateTime.parse(response[0]['created_at']), 
@@ -527,6 +575,7 @@ class _MainLayoutState extends State<MainLayout> {
             padding: const EdgeInsets.only(bottom: 12),
             child: PostCard(
               post: entry.value,
+              currentUserId: currentUser?.id, // Передаем ID для проверки владения постом
               onLike: () => _toggleLike(entry.key),
               onDelete: () => _deletePost(entry.key),
               onEdit: () => _editPost(entry.key),
@@ -636,13 +685,14 @@ class _MainLayoutState extends State<MainLayout> {
 
 class PostCard extends StatelessWidget {
   final Post post;
+  final String? currentUserId; // Добавляем ID в карточку
   final VoidCallback onLike;
   final VoidCallback onDelete;
   final VoidCallback onEdit;
   final VoidCallback onComment;
   final VoidCallback onVote;
 
-  const PostCard({super.key, required this.post, required this.onLike, required this.onDelete, required this.onEdit, required this.onComment, required this.onVote});
+  const PostCard({super.key, required this.post, this.currentUserId, required this.onLike, required this.onDelete, required this.onEdit, required this.onComment, required this.onVote});
   
   Widget _buildMedia(Post p, BuildContext context) {
     bool isNetworkUrl = p.imagePath != null && p.imagePath!.startsWith('http');
@@ -661,6 +711,9 @@ class PostCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Проверяем, наш ли это пост
+    bool isMyPost = post.userId != null && post.userId == currentUserId;
+
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(16)),
@@ -676,18 +729,20 @@ class PostCard extends StatelessWidget {
                 Text('${post.createdAt.hour}:${post.createdAt.minute.toString().padLeft(2, '0')}', style: const TextStyle(color: Colors.grey, fontSize: 12)),
               ]),
               const Spacer(),
-              PopupMenuButton<String>(
-                icon: const Icon(Icons.more_horiz, color: Colors.grey),
-                color: const Color(0xFF333333),
-                onSelected: (val) {
-                  if (val == 'edit') onEdit();
-                  if (val == 'delete') onDelete();
-                },
-                itemBuilder: (c) => [
-                  const PopupMenuItem(value: 'edit', child: Text('Редактировать', style: TextStyle(color: Colors.white))),
-                  const PopupMenuItem(value: 'delete', child: Text('Удалить', style: TextStyle(color: Colors.redAccent))),
-                ],
-              ),
+              // Показываем три точки только если это наш пост
+              if (isMyPost)
+                PopupMenuButton<String>(
+                  icon: const Icon(Icons.more_horiz, color: Colors.grey),
+                  color: const Color(0xFF333333),
+                  onSelected: (val) {
+                    if (val == 'edit') onEdit();
+                    if (val == 'delete') onDelete();
+                  },
+                  itemBuilder: (c) => [
+                    const PopupMenuItem(value: 'edit', child: Text('Редактировать', style: TextStyle(color: Colors.white))),
+                    const PopupMenuItem(value: 'delete', child: Text('Удалить', style: TextStyle(color: Colors.redAccent))),
+                  ],
+                ),
             ],
           ),
           const SizedBox(height: 12),
