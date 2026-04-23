@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart'; 
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:emoji_picker_flutter/emoji_picker_flutter.dart'; 
 import 'dart:io';
 import 'dart:convert';
 import 'dart:async'; 
@@ -29,7 +30,6 @@ class _MainLayoutState extends State<MainLayout> {
   String myName = "Вы"; 
 
   final TextEditingController _postController = TextEditingController();
-  // НОВОЕ: Контроллер и переменная для поиска
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
 
@@ -61,7 +61,10 @@ class _MainLayoutState extends State<MainLayout> {
       supabase.removeChannel(_realtimeChannel!);
     }
     _postController.dispose();
-    _searchController.dispose(); // НОВОЕ: Очищаем контроллер
+    _searchController.dispose();
+    for (var controller in _pollControllers) {
+      controller.dispose();
+    }
     super.dispose();
   }
 
@@ -98,6 +101,9 @@ class _MainLayoutState extends State<MainLayout> {
   Future<void> _loadPosts() async {
     if (currentUser == null) return;
     
+    // Получаем локальные данные, чтобы помнить, где мы уже голосовали
+    final prefs = await SharedPreferences.getInstance();
+    
     try {
       List<dynamic> data = [];
 
@@ -132,7 +138,7 @@ class _MainLayoutState extends State<MainLayout> {
             final List likesList = map['likes'] ?? [];
             final List commentsList = map['comments'] ?? [];
 
-            return Post(
+            final post = Post(
               id: map['id'],
               userId: map['user_id'], 
               username: map['username'] ?? 'Аноним',
@@ -145,7 +151,14 @@ class _MainLayoutState extends State<MainLayout> {
               likesCount: likesList.length,
               isLiked: likesList.any((like) => like['username'] == myName),
               comments: commentsList.map((c) => "${c['username']}||${c['text']}").toList(),
+              pollOptions: map['poll_options'] != null ? List<String>.from(map['poll_options']) : null,
+              pollVotes: map['poll_votes'] != null ? List<int>.from(map['poll_votes']) : null,
             );
+            
+            // Восстанавливаем информацию о нашем голосе
+            post.votedOptionIndex = prefs.getInt('voted_poll_${map['id']}');
+            
+            return post;
           }).toList();
         });
       }
@@ -179,6 +192,38 @@ class _MainLayoutState extends State<MainLayout> {
       }
     } catch (e) {
       print('Ошибка при обработке лайка: $e');
+    }
+  }
+
+  Future<void> _handleVote(int postIndex, int optionIndex) async {
+    final post = posts[postIndex];
+    if (post.id == null || post.pollVotes == null) return;
+
+    // Если уже голосовал, блокируем повторное нажатие
+    if (post.votedOptionIndex != null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Вы уже проголосовали!')));
+      return;
+    }
+
+    // Обновляем UI мгновенно
+    setState(() {
+      post.pollVotes![optionIndex]++;
+      post.votedOptionIndex = optionIndex; // Запоминаем выбор
+    });
+
+    // Сохраняем в память телефона, чтобы не забыть после перезапуска приложения
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('voted_poll_${post.id}', optionIndex);
+
+    try {
+      await supabase.from('posts').update({
+        'poll_votes': post.pollVotes
+      }).eq('id', post.id!);
+    } catch (e) {
+      print('Ошибка при голосовании: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Ошибка отправки голоса: $e'), backgroundColor: Colors.red),
+      );
     }
   }
 
@@ -414,12 +459,57 @@ class _MainLayoutState extends State<MainLayout> {
     );
   }
 
+  void _showEmojiPicker() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1E1E1E),
+      builder: (context) {
+        return SizedBox(
+          height: 300,
+          child: EmojiPicker(
+            onEmojiSelected: (category, emoji) {
+              setState(() {
+                _postController.text += emoji.emoji;
+              });
+            },
+            config: const Config(
+              emojiViewConfig: EmojiViewConfig(
+                backgroundColor: Color(0xFF1E1E1E),
+              ),
+              categoryViewConfig: CategoryViewConfig(
+                backgroundColor: Color(0xFF1E1E1E),
+                indicatorColor: Colors.blueAccent,
+                iconColorSelected: Colors.blueAccent,
+              ),
+              bottomActionBarConfig: BottomActionBarConfig(
+                backgroundColor: Color(0xFF1E1E1E),
+                buttonIconColor: Colors.grey,
+                buttonColor: Color(0xFF1E1E1E),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   void _publishPost() async {
     if (currentUser == null) return;
     
     String text = _postController.text.trim();
     List<String> currentPollOptions = _pollControllers.map((c) => c.text.trim()).where((t) => t.isNotEmpty).toList();
-    if (_isCreatingPoll && (text.isEmpty || currentPollOptions.length < 2)) return;
+    
+    if (_isCreatingPoll) {
+      if (text.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Введите текст вопроса для опросника')));
+        return;
+      }
+      if (currentPollOptions.length < 2) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Добавьте минимум 2 варианта ответа')));
+        return;
+      }
+    }
+    
     if (text.isEmpty && _pickedFile == null && currentPollOptions.isEmpty) return;
     
     ScaffoldMessenger.of(context).showSnackBar(
@@ -445,6 +535,8 @@ class _MainLayoutState extends State<MainLayout> {
         'media_type': _currentMediaType.index,
         'image_path': uploadedUrl,
         'file_name': _pickedFileName,
+        'poll_options': _isCreatingPoll ? currentPollOptions : null,
+        'poll_votes': _isCreatingPoll ? List.filled(currentPollOptions.length, 0) : null,
       }).select();
 
       setState(() {
@@ -500,7 +592,11 @@ class _MainLayoutState extends State<MainLayout> {
                       controller: _postController,
                       maxLines: null,
                       style: const TextStyle(fontSize: 16, color: Colors.white),
-                      decoration: const InputDecoration(hintText: 'Что нового?', hintStyle: TextStyle(color: Colors.grey), border: InputBorder.none),
+                      decoration: InputDecoration(
+                        hintText: _isCreatingPoll ? 'Задайте вопрос...' : 'Что нового?', 
+                        hintStyle: const TextStyle(color: Colors.grey), 
+                        border: InputBorder.none
+                      ),
                     ),
                     
                     if (_pickedFile != null) 
@@ -530,7 +626,10 @@ class _MainLayoutState extends State<MainLayout> {
 
                     if (_isCreatingPoll) Column(children: [
                       ...List.generate(_pollControllers.length, (i) => Padding(padding: const EdgeInsets.only(top: 8), child: TextField(controller: _pollControllers[i], style: const TextStyle(color: Colors.white, fontSize: 14), decoration: InputDecoration(hintText: 'Вариант ${i+1}', hintStyle: const TextStyle(color: Colors.grey), filled: true, fillColor: const Color(0xFF333333), border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none))))),
-                      TextButton(onPressed: () => setState(() => _pollControllers.add(TextEditingController())), child: const Text('+ Вариант'))
+                      TextButton(
+                        onPressed: () => setState(() => _pollControllers.add(TextEditingController())), 
+                        child: const Text('+ Вариант', style: TextStyle(color: Colors.blueAccent))
+                      )
                     ]),
                   ],
                 ),
@@ -552,7 +651,7 @@ class _MainLayoutState extends State<MainLayout> {
                   const SizedBox(width: 16),
                   IconButton(
                     icon: const Icon(Icons.emoji_emotions_outlined, color: Colors.grey, size: 22),
-                    onPressed: () {}, 
+                    onPressed: _showEmojiPicker, 
                     padding: EdgeInsets.zero,
                     constraints: const BoxConstraints(),
                   ),
@@ -611,7 +710,6 @@ class _MainLayoutState extends State<MainLayout> {
                 alignment: Alignment.topCenter,
                 child: SizedBox(
                   width: isMobile ? screenWidth : 700, 
-                  // НОВОЕ: Добавлена логика переключения на экран поиска
                   child: _currentIndex == 0 
                     ? ProfileScreen(allPosts: posts) 
                     : (_currentIndex == 2 
@@ -634,17 +732,15 @@ class _MainLayoutState extends State<MainLayout> {
         backgroundColor: const Color(0xFF121212),
         selectedItemColor: Colors.white,
         unselectedItemColor: Colors.grey,
-        // НОВОЕ: Корректное маппирование _currentIndex на индекс нижней панели
         currentIndex: _currentIndex == 1 ? 0 : (_currentIndex == 3 ? 1 : (_currentIndex == 2 ? 2 : 3)), 
         type: BottomNavigationBarType.fixed,
         showSelectedLabels: false,
         showUnselectedLabels: false,
         onTap: (idx) {
-          // НОВОЕ: Обработка клика по иконке поиска
-          if (idx == 0) setState(() => _currentIndex = 1); // Лента
-          if (idx == 1) setState(() => _currentIndex = 3); // Поиск
-          if (idx == 2) setState(() => _currentIndex = 2); // Сообщения
-          if (idx == 3) setState(() => _currentIndex = 0); // Профиль
+          if (idx == 0) setState(() => _currentIndex = 1); 
+          if (idx == 1) setState(() => _currentIndex = 3); 
+          if (idx == 2) setState(() => _currentIndex = 2); 
+          if (idx == 3) setState(() => _currentIndex = 0); 
         },
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.home_filled), label: ''),
@@ -656,7 +752,6 @@ class _MainLayoutState extends State<MainLayout> {
     );
   }
 
-  // НОВОЕ: Экран поиска
   Widget _buildSearchScreen() {
     List<Post> searchResults = [];
     if (_searchQuery.isNotEmpty) {
@@ -717,7 +812,6 @@ class _MainLayoutState extends State<MainLayout> {
           )
         else
           ...searchResults.map((post) {
-            // Чтобы лайки и удаление работали корректно, берем оригинальный индекс из списка posts
             int originalIndex = posts.indexOf(post);
             return Padding(
               padding: const EdgeInsets.only(bottom: 12),
@@ -728,7 +822,7 @@ class _MainLayoutState extends State<MainLayout> {
                 onDelete: () => _deletePost(originalIndex),
                 onEdit: () => _editPost(originalIndex),
                 onComment: () => _showComments(originalIndex),
-                onVote: () => setState(() {}), 
+                onVote: (optionIndex) => _handleVote(originalIndex, optionIndex), 
                 onProfileTap: () {
                   if (post.userId != null && post.userId == currentUser?.id) {
                     setState(() => _currentIndex = 0);
@@ -806,7 +900,7 @@ class _MainLayoutState extends State<MainLayout> {
               onDelete: () => _deletePost(entry.key),
               onEdit: () => _editPost(entry.key),
               onComment: () => _showComments(entry.key),
-              onVote: () => setState(() {}), 
+              onVote: (optionIndex) => _handleVote(entry.key, optionIndex), 
               onProfileTap: () {
                 if (entry.value.userId != null && entry.value.userId == currentUser?.id) {
                   setState(() => _currentIndex = 0);
@@ -850,7 +944,7 @@ class PostCard extends StatelessWidget {
   final VoidCallback onDelete;
   final VoidCallback onEdit;
   final VoidCallback onComment;
-  final VoidCallback onVote;
+  final Function(int) onVote;
   final VoidCallback onProfileTap; 
 
   const PostCard({
@@ -929,6 +1023,84 @@ class PostCard extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.only(top: 12), 
               child: ClipRRect(borderRadius: BorderRadius.circular(12), child: _buildMedia(post, context))
+            ),
+
+          if (post.pollOptions != null && post.pollOptions!.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 12),
+              child: Column(
+                children: List.generate(post.pollOptions!.length, (index) {
+                  final option = post.pollOptions![index];
+                  final votes = (post.pollVotes != null && post.pollVotes!.length > index) 
+                      ? post.pollVotes![index] 
+                      : 0;
+
+                  // Вычисляем проценты
+                  int totalVotes = post.pollVotes?.fold<int>(0, (int sum, int item) => sum + item) ?? 0;
+                  double percentage = totalVotes > 0 ? (votes / totalVotes) : 0.0;
+                  int percentInt = (percentage * 100).round();
+                  
+                  bool hasVoted = post.votedOptionIndex != null;
+                  bool isSelected = post.votedOptionIndex == index;
+
+                  return GestureDetector(
+                    onTap: () {
+                      if (!hasVoted) {
+                        onVote(index);
+                      }
+                    },
+                    child: Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      height: 48, // Фиксированная высота кнопки опроса
+                      child: Stack(
+                        children: [
+                          // 1. Базовый фон кнопки
+                          Container(
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF333333),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: isSelected ? Colors.blueAccent : Colors.transparent, width: 1.5),
+                            ),
+                          ),
+                          
+                          // 2. Полоса заполнения процента (показывается только после голосования)
+                          if (hasVoted)
+                            FractionallySizedBox(
+                              widthFactor: percentage,
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  color: isSelected ? Colors.blueAccent.withOpacity(0.3) : Colors.white24,
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                              ),
+                            ),
+                            
+                          // 3. Текст варианта и проценты
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Expanded(
+                                  child: Align(
+                                    alignment: Alignment.centerLeft,
+                                    child: Text(option, style: const TextStyle(color: Colors.white, fontSize: 14))
+                                  )
+                                ),
+                                if (hasVoted)
+                                  Align(
+                                    alignment: Alignment.centerRight,
+                                    child: Text('$votes ($percentInt%)', style: const TextStyle(color: Colors.grey, fontSize: 13, fontWeight: FontWeight.bold))
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }),
+              ),
             ),
             
           const SizedBox(height: 16),
@@ -1238,7 +1410,6 @@ class LeftSidebarContent extends StatelessWidget {
           const SizedBox(height: 40),
           _item(Icons.person_outline, 'Профиль', activeIdx == 0, () => onSelect(0)),
           _item(Icons.feed, 'Лента', activeIdx == 1, () => onSelect(1)),
-          // НОВОЕ: Добавили кнопку поиска в меню ПК
           _item(Icons.search, 'Поиск', activeIdx == 3, () => onSelect(3)),
           _item(Icons.chat_bubble_outline, 'Сообщения', activeIdx == 2, () => onSelect(2)),
           const Spacer(),

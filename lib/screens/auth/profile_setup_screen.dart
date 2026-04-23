@@ -201,7 +201,7 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
         const SizedBox(height: 4),
         Text('Уникальный никнейм для твоего профиля\n(латиница, цифры, и "_")', style: TextStyle(color: AppColors.textSub, fontSize: 12)),
         const SizedBox(height: 12),
-        _buildTextField(controller: _usernameController, hint: 'zxcAlmas'),
+        _buildTextField(controller: _usernameController, hint: 'Тэг'),
         
         const SizedBox(height: 40),
         ElevatedButton(

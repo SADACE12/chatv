@@ -151,7 +151,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     const SizedBox(height: 8),
                     _buildTextField(
                       controller: _emailController,
-                      hint: 'Almas@gmail.com',
+                      hint: 'Почта',
                     ),
 
                     const SizedBox(height: 20),

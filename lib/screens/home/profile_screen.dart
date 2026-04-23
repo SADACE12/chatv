@@ -5,7 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../theme/app_colors.dart';
 import '../../models/post_model.dart';
 import 'main_layout.dart';
-import 'messages_screen.dart'; // НОВОЕ: Переходим к сообщениям через общий класс
+import 'messages_screen.dart'; 
 
 class ProfileScreen extends StatefulWidget {
   final List<Post> allPosts; 
@@ -266,7 +266,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                     const SizedBox(height: 24),
                     
-                    // Кнопки Подписаться и Написать (для чужого профиля)
                     if (!isMyProfile)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 24.0),
@@ -289,7 +288,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             Expanded(
                               child: ElevatedButton(
                                 onPressed: () {
-                                  // НОВОЕ: Передаем данные в MessagesScreen
                                   Navigator.push(context, MaterialPageRoute(builder: (_) => MessagesScreen(
                                     initialChat: ChatItem(
                                       id: targetId,
@@ -380,7 +378,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     onComment: () {
                       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Перейдите в ленту, чтобы оставить комментарий')));
                     }, 
-                    onVote: () => setState(() { _savePosts(); }), 
+                    onVote: (int index) => setState(() { _savePosts(); }), // <-- ИСПРАВЛЕНА ОШИБКА
                     onProfileTap: () {}, 
                   ),
                 )),
@@ -393,9 +391,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 }
 
-// ==========================================
-// АДАПТИВНЫЙ ДИАЛОГ НАСТРОЕК
-// ==========================================
 class SettingsDialog extends StatefulWidget {
   final String currentEmoji;
   final String currentName;
