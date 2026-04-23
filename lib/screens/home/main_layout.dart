@@ -29,12 +29,15 @@ class _MainLayoutState extends State<MainLayout> {
   String myName = "Вы"; 
 
   final TextEditingController _postController = TextEditingController();
+  // НОВОЕ: Контроллер и переменная для поиска
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
+
   final ImagePicker _picker = ImagePicker();
   
   List<Post> posts = [];
   int _currentIndex = 1; 
   
-  // НОВОЕ: Переменная для отслеживания текущей вкладки ленты (Для вас / Подписки)
   bool _isFollowingFeed = false;
 
   XFile? _pickedFile; 
@@ -58,6 +61,7 @@ class _MainLayoutState extends State<MainLayout> {
       supabase.removeChannel(_realtimeChannel!);
     }
     _postController.dispose();
+    _searchController.dispose(); // НОВОЕ: Очищаем контроллер
     super.dispose();
   }
 
@@ -91,9 +95,6 @@ class _MainLayoutState extends State<MainLayout> {
         .subscribe();
   }
 
-  // ==========================================
-  // НОВОЕ: Умная загрузка постов с фильтром
-  // ==========================================
   Future<void> _loadPosts() async {
     if (currentUser == null) return;
     
@@ -101,7 +102,6 @@ class _MainLayoutState extends State<MainLayout> {
       List<dynamic> data = [];
 
       if (_isFollowingFeed) {
-        // 1. Узнаем, на кого мы подписаны
         final followData = await supabase
             .from('followers')
             .select('following_id')
@@ -109,20 +109,17 @@ class _MainLayoutState extends State<MainLayout> {
             
         List<String> followedIds = (followData as List).map((row) => row['following_id'].toString()).toList();
         
-        // Если ни на кого не подписаны, постов нет
         if (followedIds.isEmpty) {
           if (mounted) setState(() => posts = []);
           return;
         }
         
-        // 2. Скачиваем посты ТОЛЬКО этих людей
         data = await supabase
             .from('posts')
             .select('*, likes(username), comments(*)')
             .filter('user_id', 'in', followedIds)
             .order('created_at', ascending: false);
       } else {
-        // Обычная загрузка всех постов
         data = await supabase
             .from('posts')
             .select('*, likes(username), comments(*)')
@@ -202,17 +199,6 @@ class _MainLayoutState extends State<MainLayout> {
     } catch (e) {
       print('Ошибка при отправке комментария: $e');
     }
-  }
-
-  Future<void> _savePosts() async {
-    final prefs = await SharedPreferences.getInstance();
-    List<String> jsonPosts = posts.map((p) => jsonEncode({
-      'username': p.username, 'text': p.text, 'imagePath': p.imagePath, 'fileName': p.fileName,
-      'mediaType': p.mediaType.index, 'pollOptions': p.pollOptions,
-      'pollVotes': p.pollVotes, 'votedOptionIndex': p.votedOptionIndex,
-      'likesCount': p.likesCount, 'isLiked': p.isLiked, 'comments': p.comments,
-    })).toList();
-    await prefs.setStringList('saved_posts_json_v3', jsonPosts);
   }
 
   void _deletePost(int index) {
@@ -462,7 +448,6 @@ class _MainLayoutState extends State<MainLayout> {
       }).select();
 
       setState(() {
-        // Если мы находимся на вкладке "Для вас" ИЛИ мы публикуем пост (мы подписаны на себя), добавляем
         if (!_isFollowingFeed) {
           posts.insert(0, Post(
             id: response[0]['id'],
@@ -626,9 +611,12 @@ class _MainLayoutState extends State<MainLayout> {
                 alignment: Alignment.topCenter,
                 child: SizedBox(
                   width: isMobile ? screenWidth : 700, 
+                  // НОВОЕ: Добавлена логика переключения на экран поиска
                   child: _currentIndex == 0 
                     ? ProfileScreen(allPosts: posts) 
-                    : (_currentIndex == 2 ? const MessagesScreen() : _buildFeed()),
+                    : (_currentIndex == 2 
+                        ? const MessagesScreen() 
+                        : (_currentIndex == 3 ? _buildSearchScreen() : _buildFeed())),
                 ),
               ),
             ),
@@ -646,14 +634,17 @@ class _MainLayoutState extends State<MainLayout> {
         backgroundColor: const Color(0xFF121212),
         selectedItemColor: Colors.white,
         unselectedItemColor: Colors.grey,
-        currentIndex: _currentIndex == 0 ? 3 : (_currentIndex == 2 ? 2 : 0), 
+        // НОВОЕ: Корректное маппирование _currentIndex на индекс нижней панели
+        currentIndex: _currentIndex == 1 ? 0 : (_currentIndex == 3 ? 1 : (_currentIndex == 2 ? 2 : 3)), 
         type: BottomNavigationBarType.fixed,
         showSelectedLabels: false,
         showUnselectedLabels: false,
         onTap: (idx) {
-          if (idx == 0) setState(() => _currentIndex = 1);
-          if (idx == 2) setState(() => _currentIndex = 2);
-          if (idx == 3) setState(() => _currentIndex = 0);
+          // НОВОЕ: Обработка клика по иконке поиска
+          if (idx == 0) setState(() => _currentIndex = 1); // Лента
+          if (idx == 1) setState(() => _currentIndex = 3); // Поиск
+          if (idx == 2) setState(() => _currentIndex = 2); // Сообщения
+          if (idx == 3) setState(() => _currentIndex = 0); // Профиль
         },
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.home_filled), label: ''),
@@ -665,18 +656,126 @@ class _MainLayoutState extends State<MainLayout> {
     );
   }
 
+  // НОВОЕ: Экран поиска
+  Widget _buildSearchScreen() {
+    List<Post> searchResults = [];
+    if (_searchQuery.isNotEmpty) {
+      searchResults = posts.where((p) => 
+        p.text.toLowerCase().contains(_searchQuery.toLowerCase()) ||
+        p.username.toLowerCase().contains(_searchQuery.toLowerCase())
+      ).toList();
+    }
+
+    return ListView(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+      children: [
+        TextField(
+          controller: _searchController,
+          onChanged: (val) {
+            setState(() {
+              _searchQuery = val;
+            });
+          },
+          style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(
+            hintText: 'Поиск постов и авторов...',
+            hintStyle: const TextStyle(color: Colors.grey),
+            prefixIcon: const Icon(Icons.search, color: Colors.grey),
+            suffixIcon: _searchQuery.isNotEmpty 
+              ? IconButton(
+                  icon: const Icon(Icons.clear, color: Colors.grey),
+                  onPressed: () {
+                    _searchController.clear();
+                    setState(() {
+                      _searchQuery = '';
+                    });
+                  },
+                )
+              : null,
+            filled: true,
+            fillColor: const Color(0xFF1E1E1E),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(20),
+              borderSide: BorderSide.none,
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        if (_searchQuery.isEmpty)
+          const Padding(
+            padding: EdgeInsets.only(top: 40),
+            child: Center(
+              child: Text('Введите текст для поиска', style: TextStyle(color: Colors.grey)),
+            ),
+          )
+        else if (searchResults.isEmpty)
+          const Padding(
+            padding: EdgeInsets.only(top: 40),
+            child: Center(
+              child: Text('Ничего не найдено', style: TextStyle(color: Colors.grey)),
+            ),
+          )
+        else
+          ...searchResults.map((post) {
+            // Чтобы лайки и удаление работали корректно, берем оригинальный индекс из списка posts
+            int originalIndex = posts.indexOf(post);
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: PostCard(
+                post: post,
+                currentUserId: currentUser?.id, 
+                onLike: () => _toggleLike(originalIndex),
+                onDelete: () => _deletePost(originalIndex),
+                onEdit: () => _editPost(originalIndex),
+                onComment: () => _showComments(originalIndex),
+                onVote: () => setState(() {}), 
+                onProfileTap: () {
+                  if (post.userId != null && post.userId == currentUser?.id) {
+                    setState(() => _currentIndex = 0);
+                  } else {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => Scaffold(
+                          backgroundColor: const Color(0xFF000000),
+                          appBar: AppBar(
+                            backgroundColor: const Color(0xFF121212),
+                            title: Text(post.username, style: const TextStyle(color: Colors.white, fontSize: 16)),
+                            iconTheme: const IconThemeData(color: Colors.white),
+                          ),
+                          body: Align(
+                            alignment: Alignment.topCenter,
+                            child: SizedBox(
+                              width: MediaQuery.of(context).size.width < 900 ? MediaQuery.of(context).size.width : 700,
+                              child: ProfileScreen(
+                                allPosts: posts, 
+                                targetUserId: post.userId, 
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  }
+                },
+              ),
+            );
+          }).toList(),
+      ],
+    );
+  }
+
   Widget _buildFeed() {
     return ListView(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
       children: [
-        // НОВОЕ: Передаем состояние и коллбэк во вкладки
         TopTabs(
           isFollowingFeed: _isFollowingFeed,
           onTabChanged: (isFollowing) {
             if (_isFollowingFeed != isFollowing) {
               setState(() {
                 _isFollowingFeed = isFollowing;
-                posts = []; // Очищаем старые посты на долю секунды, пока грузятся новые
+                posts = []; 
               });
               _loadPosts();
             }
@@ -727,7 +826,7 @@ class _MainLayoutState extends State<MainLayout> {
                           child: SizedBox(
                             width: MediaQuery.of(context).size.width < 900 ? MediaQuery.of(context).size.width : 700,
                             child: ProfileScreen(
-                              allPosts: posts, // В будущем здесь нужно будет передавать посты с бэкенда, но пока ок
+                              allPosts: posts,
                               targetUserId: entry.value.userId, 
                             ),
                           ),
@@ -1139,6 +1238,8 @@ class LeftSidebarContent extends StatelessWidget {
           const SizedBox(height: 40),
           _item(Icons.person_outline, 'Профиль', activeIdx == 0, () => onSelect(0)),
           _item(Icons.feed, 'Лента', activeIdx == 1, () => onSelect(1)),
+          // НОВОЕ: Добавили кнопку поиска в меню ПК
+          _item(Icons.search, 'Поиск', activeIdx == 3, () => onSelect(3)),
           _item(Icons.chat_bubble_outline, 'Сообщения', activeIdx == 2, () => onSelect(2)),
           const Spacer(),
           ListTile(
@@ -1203,7 +1304,6 @@ class ClanEmojisPanel extends StatelessWidget {
   }
 }
 
-// НОВОЕ: Виджет переделан для поддержки кликов и передачи состояний
 class TopTabs extends StatelessWidget {
   final bool isFollowingFeed;
   final Function(bool) onTabChanged;
