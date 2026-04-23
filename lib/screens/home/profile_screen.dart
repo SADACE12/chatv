@@ -4,19 +4,21 @@ import 'dart:convert';
 import 'package:supabase_flutter/supabase_flutter.dart'; 
 import '../../theme/app_colors.dart';
 import '../../models/post_model.dart';
-import 'main_layout.dart'; 
+import 'main_layout.dart';
+import 'messages_screen.dart'; // НОВОЕ: Переходим к сообщениям через общий класс
 
 class ProfileScreen extends StatefulWidget {
   final List<Post> allPosts; 
+  final String? targetUserId; 
 
-  const ProfileScreen({super.key, required this.allPosts});
+  const ProfileScreen({super.key, required this.allPosts, this.targetUserId});
 
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
-  // Получаем текущего пользователя из Supabase
+  final supabase = Supabase.instance.client;
   final currentUser = Supabase.instance.client.auth.currentUser;
 
   String userName = "Загрузка...";
@@ -25,26 +27,102 @@ class _ProfileScreenState extends State<ProfileScreen> {
   String userBio = "";
   bool _showLikes = false; 
 
+  int followersCount = 0;
+  bool isFollowing = false;
+
+  bool get isMyProfile => widget.targetUserId == null || widget.targetUserId == currentUser?.id;
+  String get targetId => widget.targetUserId ?? currentUser?.id ?? '';
+
   @override
   void initState() {
     super.initState();
     _loadUserData();
+    _loadFollowData(); 
   }
 
   Future<void> _loadUserData() async {
-    final prefs = await SharedPreferences.getInstance();
-    
-    // Берем первую часть почты как дефолтное значение
-    String defaultName = currentUser?.email?.split('@')[0] ?? "user";
+    if (isMyProfile) {
+      final prefs = await SharedPreferences.getInstance();
+      String defaultName = currentUser?.email?.split('@')[0] ?? "user";
 
+      setState(() {
+        userName = prefs.getString('userName') ?? defaultName;
+        userHandle = "@${prefs.getString('userHandle') ?? defaultName.toLowerCase()}";
+        userEmoji = prefs.getString('userEmoji') ?? "😘";
+        userBio = prefs.getString('userBio') ?? "";
+      });
+    } else {
+      final userPosts = widget.allPosts.where((p) => p.userId == widget.targetUserId).toList();
+      setState(() {
+        if (userPosts.isNotEmpty) {
+          userName = userPosts.first.username;
+          userHandle = "@${userName.toLowerCase().replaceAll(' ', '_')}";
+        } else {
+          userName = "Пользователь";
+          userHandle = "@user";
+        }
+        userEmoji = "👤"; 
+        userBio = ""; 
+      });
+    }
+  }
+
+  Future<void> _loadFollowData() async {
+    if (targetId.isEmpty) return;
+
+    try {
+      final data = await supabase
+          .from('followers')
+          .select('follower_id')
+          .eq('following_id', targetId);
+
+      if (mounted) {
+        setState(() {
+          followersCount = (data as List).length;
+          if (currentUser != null) {
+            isFollowing = data.any((row) => row['follower_id'] == currentUser!.id);
+          }
+        });
+      }
+    } catch (e) {
+      print('Ошибка загрузки подписчиков: $e');
+    }
+  }
+
+  Future<void> _toggleFollow() async {
+    if (currentUser == null) return;
+    
+    final wasFollowing = isFollowing;
+    
     setState(() {
-      // Имя берем из настроек, либо из Email
-      userName = prefs.getString('userName') ?? defaultName;
-      // Никнейм (handle) берем из настроек, либо из Email (маленькими буквами)
-      userHandle = "@${prefs.getString('userHandle') ?? defaultName.toLowerCase()}";
-      userEmoji = prefs.getString('userEmoji') ?? "😘";
-      userBio = prefs.getString('userBio') ?? "";
+      isFollowing = !isFollowing;
+      followersCount += isFollowing ? 1 : -1;
     });
+
+    try {
+      if (wasFollowing) {
+        await supabase
+            .from('followers')
+            .delete()
+            .eq('follower_id', currentUser!.id)
+            .eq('following_id', targetId);
+      } else {
+        await supabase
+            .from('followers')
+            .insert({
+          'follower_id': currentUser!.id,
+          'following_id': targetId,
+        });
+      }
+    } catch (e) {
+      print('Ошибка при подписке: $e');
+      if (mounted) {
+        setState(() {
+          isFollowing = wasFollowing;
+          followersCount += isFollowing ? 1 : -1;
+        });
+      }
+    }
   }
 
   Future<void> _savePosts() async {
@@ -73,10 +151,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Фильтруем посты по user_id из Supabase
-    List<Post> myPosts = widget.allPosts.where((p) => p.userId != null && p.userId == currentUser?.id).toList();
+    List<Post> userSpecificPosts = widget.allPosts.where((p) => p.userId != null && p.userId == targetId).toList();
     List<Post> likedPosts = widget.allPosts.where((p) => p.isLiked).toList();
-    List<Post> displayList = _showLikes ? likedPosts : myPosts;
+    
+    List<Post> displayList = (isMyProfile && _showLikes) ? likedPosts : userSpecificPosts;
 
     return ValueListenableBuilder<bool>(
       valueListenable: AppColors.isDarkNotifier,
@@ -129,20 +207,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         ],
                       ),
                     ),
-                    Positioned(
-                      bottom: 15, right: 20,
-                      child: ElevatedButton(
-                        onPressed: _showSettingsDialog, 
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: AppColors.buttonBg,
-                          foregroundColor: AppColors.buttonText,
-                          elevation: 0,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                    if (isMyProfile)
+                      Positioned(
+                        bottom: 15, right: 20,
+                        child: ElevatedButton(
+                          onPressed: _showSettingsDialog, 
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.buttonBg,
+                            foregroundColor: AppColors.buttonText,
+                            elevation: 0,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                          ),
+                          child: const Text('Редактировать', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                         ),
-                        child: const Text('Редактировать', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                       ),
-                    ),
                   ],
                 ),
               ),
@@ -170,10 +249,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     const SizedBox(height: 16),
                     Row(
                       children: [
-                        Text('${displayList.length}', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
+                        Text('${userSpecificPosts.length}', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
                         Text(' публикаций', style: TextStyle(color: AppColors.textSub, fontSize: 14)),
                         const SizedBox(width: 16),
-                        Text('0', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
+                        Text('$followersCount', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
                         Text(' подписчиков', style: TextStyle(color: AppColors.textSub, fontSize: 14)),
                       ],
                     ),
@@ -187,34 +266,90 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                     const SizedBox(height: 24),
                     
-                    Container(
-                      padding: const EdgeInsets.all(4),
-                      decoration: BoxDecoration(color: AppColors.card, borderRadius: BorderRadius.circular(12)),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: GestureDetector(
-                              onTap: () => setState(() => _showLikes = false),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(vertical: 10),
-                                decoration: BoxDecoration(color: !_showLikes ? AppColors.input : Colors.transparent, borderRadius: BorderRadius.circular(10)),
-                                child: Center(child: Text('Посты', style: TextStyle(color: !_showLikes ? AppColors.text : AppColors.textSub, fontWeight: FontWeight.bold))),
+                    // Кнопки Подписаться и Написать (для чужого профиля)
+                    if (!isMyProfile)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 24.0),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: ElevatedButton(
+                                onPressed: _toggleFollow,
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: isFollowing ? AppColors.input : Colors.blueAccent,
+                                  foregroundColor: isFollowing ? AppColors.text : Colors.white,
+                                  elevation: 0,
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  padding: const EdgeInsets.symmetric(vertical: 14),
+                                ),
+                                child: Text(isFollowing ? 'Отписаться' : 'Подписаться', style: const TextStyle(fontWeight: FontWeight.bold)),
                               ),
                             ),
-                          ),
-                          Expanded(
-                            child: GestureDetector(
-                              onTap: () => setState(() => _showLikes = true),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(vertical: 10),
-                                decoration: BoxDecoration(color: _showLikes ? AppColors.input : Colors.transparent, borderRadius: BorderRadius.circular(10)),
-                                child: Center(child: Text('Лайки', style: TextStyle(color: _showLikes ? AppColors.text : AppColors.textSub, fontWeight: FontWeight.bold))),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: ElevatedButton(
+                                onPressed: () {
+                                  // НОВОЕ: Передаем данные в MessagesScreen
+                                  Navigator.push(context, MaterialPageRoute(builder: (_) => MessagesScreen(
+                                    initialChat: ChatItem(
+                                      id: targetId,
+                                      name: userName,
+                                      avatarColor: Colors.blueAccent,
+                                      emoji: userEmoji ?? '👤',
+                                    ),
+                                  )));
+                                },
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: AppColors.input,
+                                  foregroundColor: AppColors.text,
+                                  elevation: 0,
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  padding: const EdgeInsets.symmetric(vertical: 14),
+                                ),
+                                child: const Text('Сообщение', style: TextStyle(fontWeight: FontWeight.bold)),
                               ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
-                    ),
+
+                    if (isMyProfile)
+                      Container(
+                        padding: const EdgeInsets.all(4),
+                        decoration: BoxDecoration(color: AppColors.card, borderRadius: BorderRadius.circular(12)),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: GestureDetector(
+                                onTap: () => setState(() => _showLikes = false),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(vertical: 10),
+                                  decoration: BoxDecoration(color: !_showLikes ? AppColors.input : Colors.transparent, borderRadius: BorderRadius.circular(10)),
+                                  child: Center(child: Text('Посты', style: TextStyle(color: !_showLikes ? AppColors.text : AppColors.textSub, fontWeight: FontWeight.bold))),
+                                ),
+                              ),
+                            ),
+                            Expanded(
+                              child: GestureDetector(
+                                onTap: () => setState(() => _showLikes = true),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(vertical: 10),
+                                  decoration: BoxDecoration(color: _showLikes ? AppColors.input : Colors.transparent, borderRadius: BorderRadius.circular(10)),
+                                  child: Center(child: Text('Лайки', style: TextStyle(color: _showLikes ? AppColors.text : AppColors.textSub, fontWeight: FontWeight.bold))),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    else 
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                        decoration: BoxDecoration(color: AppColors.input, borderRadius: BorderRadius.circular(10)),
+                        child: Center(child: Text('Публикации пользователя', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold))),
+                      ),
+                      
                     const SizedBox(height: 20),
                   ],
                 ),
@@ -232,7 +367,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
                   child: PostCard(
                     post: post,
-                    currentUserId: currentUser?.id, // Передаем ID текущего пользователя
+                    currentUserId: currentUser?.id, 
                     onLike: () {
                       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Лайки лучше ставить в общей ленте')));
                     },
@@ -246,6 +381,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Перейдите в ленту, чтобы оставить комментарий')));
                     }, 
                     onVote: () => setState(() { _savePosts(); }), 
+                    onProfileTap: () {}, 
                   ),
                 )),
                 const SizedBox(height: 40),

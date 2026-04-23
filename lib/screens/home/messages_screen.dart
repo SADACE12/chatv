@@ -7,8 +7,6 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart'; 
-
-// НОВЫЕ ИМПОРТЫ ДЛЯ АУДИО
 import 'package:record/record.dart';
 import 'package:audioplayers/audioplayers.dart';
 
@@ -29,7 +27,10 @@ class ChatItem {
 }
 
 class MessagesScreen extends StatefulWidget {
-  const MessagesScreen({super.key});
+  final ChatItem? initialChat; 
+
+  const MessagesScreen({super.key, this.initialChat});
+  
   @override
   State<MessagesScreen> createState() => _MessagesScreenState();
 }
@@ -49,9 +50,8 @@ class _MessagesScreenState extends State<MessagesScreen> {
   List<ChatItem> chats = [];
   bool _isLoadingChats = true; 
   bool _isUploading = false; 
-  bool _isComposing = false; // Печатает ли сейчас пользователь текст
+  bool _isComposing = false; 
 
-  // ПЕРЕМЕННЫЕ ДЛЯ ЗАПИСИ ЗВУКА
   final _audioRecorder = AudioRecorder();
   bool _isRecording = false;
 
@@ -68,6 +68,12 @@ class _MessagesScreenState extends State<MessagesScreen> {
     super.initState();
     _loadMyName();
     _loadUsers(); 
+
+    if (widget.initialChat != null) {
+      selectedChat = widget.initialChat;
+      _messagesStream = supabase.from('messages').stream(primaryKey: ['id']).order('created_at', ascending: false);
+      _joinChannel();
+    }
   }
 
   @override
@@ -75,7 +81,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
     _msgController.dispose();
     _searchController.dispose();
     _typingTimer?.cancel();
-    _audioRecorder.dispose(); // Очищаем рекордер
+    _audioRecorder.dispose(); 
     _leaveChannel(); 
     super.dispose();
   }
@@ -134,16 +140,58 @@ class _MessagesScreenState extends State<MessagesScreen> {
   Future<void> _loadUsers() async {
     if (currentUser == null) return;
     try {
-      final data = await supabase.from('profiles').select().neq('id', currentUser!.id);
+      final myId = currentUser!.id;
+      final Set<String> relevantUserIds = {};
+
+      final msgData = await supabase
+          .from('messages')
+          .select('sender_id, receiver_id')
+          .or('sender_id.eq.$myId,receiver_id.eq.$myId');
+
+      for (var row in msgData) {
+        if (row['sender_id'] != myId) relevantUserIds.add(row['sender_id']);
+        if (row['receiver_id'] != myId) relevantUserIds.add(row['receiver_id']);
+      }
+
+      try {
+        final followData = await supabase
+            .from('followers')
+            .select('following_id')
+            .eq('follower_id', myId);
+            
+        for (var row in followData) {
+          relevantUserIds.add(row['following_id']);
+        }
+      } catch (e) {}
+
+      if (relevantUserIds.isEmpty) {
+        if (mounted) {
+          setState(() {
+            chats = [];
+            _isLoadingChats = false;
+          });
+        }
+        return;
+      }
+
+      final data = await supabase
+          .from('profiles')
+          .select()
+          .filter('id', 'in', relevantUserIds.toList()); 
+
       if (mounted) {
         setState(() {
           chats = (data as List).map((user) => ChatItem(
-              id: user['id'], name: user['username'] ?? 'Пользователь', avatarColor: Colors.blueAccent, emoji: user['emoji'] ?? '👤', 
+              id: user['id'], 
+              name: user['username'] ?? 'Пользователь', 
+              avatarColor: Colors.blueAccent, 
+              emoji: user['emoji'] ?? '👤', 
           )).toList();
           _isLoadingChats = false; 
         });
       }
     } catch (e) {
+      print('Ошибка при загрузке списка чатов: $e');
       if (mounted) setState(() => _isLoadingChats = false);
     }
   }
@@ -165,7 +213,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
     _msgController.clear(); 
     setState(() {
       _replyingToMessage = null;
-      _isComposing = false; // Прячем кнопку отправки
+      _isComposing = false; 
     });
 
     try {
@@ -177,7 +225,6 @@ class _MessagesScreenState extends State<MessagesScreen> {
     }
   }
 
-  // --- ЛОГИКА ЗАПИСИ ГОЛОСА ---
   Future<void> _startRecording() async {
     try {
       if (await _audioRecorder.hasPermission()) {
@@ -235,7 +282,6 @@ class _MessagesScreenState extends State<MessagesScreen> {
       if (mounted) setState(() => _isUploading = false); 
     }
   }
-  // ----------------------------
 
   Future<void> _markAsRead() async {
     final myId = currentUser?.id;
@@ -372,21 +418,24 @@ class _MessagesScreenState extends State<MessagesScreen> {
             ),
           ),
           Expanded(
-            child: _isLoadingChats ? const Center(child: CircularProgressIndicator(color: Colors.blueAccent))
-              : ListView.builder(
-                  itemCount: filtered.length,
-                  itemBuilder: (c, i) => ListTile(
-                    leading: CircleAvatar(backgroundColor: filtered[i].avatarColor.withOpacity(0.2), child: Text(filtered[i].emoji, style: const TextStyle(fontSize: 18))),
-                    title: Text(filtered[i].name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                    onTap: () {
-                      setState(() {
-                        selectedChat = filtered[i]; _searchQuery = ""; _searchController.clear();
-                        _messagesStream = supabase.from('messages').stream(primaryKey: ['id']).order('created_at', ascending: false);
-                        _joinChannel(); 
-                      });
-                    },
-                  ),
-                ),
+            child: _isLoadingChats 
+              ? const Center(child: CircularProgressIndicator(color: Colors.blueAccent))
+              : chats.isEmpty 
+                  ? const Center(child: Text("Нет доступных чатов.\nПодпишитесь на кого-то!", textAlign: TextAlign.center, style: TextStyle(color: Colors.grey)))
+                  : ListView.builder(
+                      itemCount: filtered.length,
+                      itemBuilder: (c, i) => ListTile(
+                        leading: CircleAvatar(backgroundColor: filtered[i].avatarColor.withOpacity(0.2), child: Text(filtered[i].emoji, style: const TextStyle(fontSize: 18))),
+                        title: Text(filtered[i].name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                        onTap: () {
+                          setState(() {
+                            selectedChat = filtered[i]; _searchQuery = ""; _searchController.clear();
+                            _messagesStream = supabase.from('messages').stream(primaryKey: ['id']).order('created_at', ascending: false);
+                            _joinChannel(); 
+                          });
+                        },
+                      ),
+                    ),
           ),
         ],
       ),
@@ -416,7 +465,11 @@ class _MessagesScreenState extends State<MessagesScreen> {
         ),
         leading: IconButton(icon: const Icon(Icons.arrow_back, color: Colors.white), onPressed: () {
           _leaveChannel(); 
-          setState(() { selectedChat = null; _messagesStream = null; _replyingToMessage = null; });
+          if (widget.initialChat != null) {
+            Navigator.pop(context); 
+          } else {
+            setState(() { selectedChat = null; _messagesStream = null; _replyingToMessage = null; }); 
+          }
         }),
       ),
       body: Column(
@@ -587,9 +640,6 @@ class _MessagesScreenState extends State<MessagesScreen> {
   }
 }
 
-// ==========================================
-// ВИДЖЕТ: АУДИОПЛЕЕР ДЛЯ ГОЛОСОВЫХ СООБЩЕНИЙ
-// ==========================================
 class AudioBubble extends StatefulWidget {
   final String url;
   final bool isMe;
@@ -654,7 +704,7 @@ class _AudioBubbleState extends State<AudioBubble> {
             }
           ),
           SizedBox(
-            width: 120, // Ширина полоски перемотки
+            width: 120, 
             child: SliderTheme(
               data: SliderThemeData(
                 trackHeight: 2,

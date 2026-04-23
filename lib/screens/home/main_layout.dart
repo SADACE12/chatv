@@ -12,7 +12,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../models/post_model.dart';
 import '../auth/login_screen.dart';
 import '../../data/app_data.dart';
-import 'profile_screen.dart'; 
+import 'profile_screen.dart' hide MessagesScreen; 
 import 'messages_screen.dart'; 
 
 class MainLayout extends StatefulWidget {
@@ -25,16 +25,18 @@ class MainLayout extends StatefulWidget {
 class _MainLayoutState extends State<MainLayout> {
   final supabase = Supabase.instance.client;
   
-  // Получение текущего пользователя
   User? get currentUser => supabase.auth.currentUser;
-  
-  String myName = "Вы"; // Имя текущего пользователя
+  String myName = "Вы"; 
 
   final TextEditingController _postController = TextEditingController();
   final ImagePicker _picker = ImagePicker();
   
   List<Post> posts = [];
   int _currentIndex = 1; 
+  
+  // НОВОЕ: Переменная для отслеживания текущей вкладки ленты (Для вас / Подписки)
+  bool _isFollowingFeed = false;
+
   XFile? _pickedFile; 
   String? _pickedFileName;
   PostMediaType _currentMediaType = PostMediaType.none;
@@ -42,7 +44,6 @@ class _MainLayoutState extends State<MainLayout> {
   bool _isCreatingPoll = false;
   List<TextEditingController> _pollControllers = [TextEditingController(), TextEditingController()];
 
-  // НОВОЕ: Переменная для хранения канала связи (Realtime)
   RealtimeChannel? _realtimeChannel;
 
   @override
@@ -51,7 +52,6 @@ class _MainLayoutState extends State<MainLayout> {
     _initData();
   }
 
-  // НОВОЕ: Отключаем прослушку БД при выходе, чтобы не тратить ресурсы
   @override
   void dispose() {
     if (_realtimeChannel != null) {
@@ -61,7 +61,6 @@ class _MainLayoutState extends State<MainLayout> {
     super.dispose();
   }
 
-  // Загружаем имя пользователя, а затем посты
   Future<void> _initData() async {
     if (currentUser == null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -76,13 +75,10 @@ class _MainLayoutState extends State<MainLayout> {
         myName = prefs.getString('userName') ?? currentUser!.email!.split('@')[0];
       });
     }
-    await _loadPosts(); // Ждем загрузки постов
-    _setupRealtime();   // НОВОЕ: Включаем живую ленту
+    await _loadPosts(); 
+    _setupRealtime();   
   }
 
-  // ==========================================
-  // НОВОЕ: НАСТРОЙКА ЖИВОЙ ЛЕНТЫ (REALTIME)
-  // ==========================================
   void _setupRealtime() {
     _realtimeChannel = supabase
         .channel('public_changes')
@@ -90,23 +86,48 @@ class _MainLayoutState extends State<MainLayout> {
             event: PostgresChangeEvent.all,
             schema: 'public',
             callback: (payload) {
-              print('Обновление в реальном времени: ${payload.eventType}');
-              // Если кто-то лайкнул, откомментил или запостил — обновляем ленту
               _loadPosts(); 
             })
         .subscribe();
   }
 
   // ==========================================
-  // ЗАГРУЗКА ПОСТОВ + ЛАЙКОВ + КОММЕНТАРИЕВ
+  // НОВОЕ: Умная загрузка постов с фильтром
   // ==========================================
   Future<void> _loadPosts() async {
+    if (currentUser == null) return;
+    
     try {
-      // Запрашиваем посты и связанные данные из таблиц likes и comments
-      final data = await supabase
-          .from('posts')
-          .select('*, likes(username), comments(*)')
-          .order('created_at', ascending: false);
+      List<dynamic> data = [];
+
+      if (_isFollowingFeed) {
+        // 1. Узнаем, на кого мы подписаны
+        final followData = await supabase
+            .from('followers')
+            .select('following_id')
+            .eq('follower_id', currentUser!.id);
+            
+        List<String> followedIds = (followData as List).map((row) => row['following_id'].toString()).toList();
+        
+        // Если ни на кого не подписаны, постов нет
+        if (followedIds.isEmpty) {
+          if (mounted) setState(() => posts = []);
+          return;
+        }
+        
+        // 2. Скачиваем посты ТОЛЬКО этих людей
+        data = await supabase
+            .from('posts')
+            .select('*, likes(username), comments(*)')
+            .filter('user_id', 'in', followedIds)
+            .order('created_at', ascending: false);
+      } else {
+        // Обычная загрузка всех постов
+        data = await supabase
+            .from('posts')
+            .select('*, likes(username), comments(*)')
+            .order('created_at', ascending: false);
+      }
 
       if (mounted) {
         setState(() {
@@ -116,7 +137,7 @@ class _MainLayoutState extends State<MainLayout> {
 
             return Post(
               id: map['id'],
-              userId: map['user_id'], // Читаем ID автора из базы
+              userId: map['user_id'], 
               username: map['username'] ?? 'Аноним',
               avatarColor: Color(map['avatar_color'] ?? Colors.orange.value), 
               createdAt: DateTime.parse(map['created_at']), 
@@ -125,9 +146,7 @@ class _MainLayoutState extends State<MainLayout> {
               fileName: map['file_name'],
               mediaType: PostMediaType.values[map['media_type'] ?? 0],
               likesCount: likesList.length,
-              // Проверяем, лайкали ли мы этот пост лично
               isLiked: likesList.any((like) => like['username'] == myName),
-              // Превращаем список из БД в наш формат "Имя||Текст"
               comments: commentsList.map((c) => "${c['username']}||${c['text']}").toList(),
             );
           }).toList();
@@ -138,9 +157,6 @@ class _MainLayoutState extends State<MainLayout> {
     }
   }
 
-  // ==========================================
-  // ЛАЙК (ОБЛАКО)
-  // ==========================================
   void _toggleLike(int index) async {
     final post = posts[index];
     final postId = post.id;
@@ -148,7 +164,6 @@ class _MainLayoutState extends State<MainLayout> {
 
     final bool wasLiked = post.isLiked;
 
-    // Мгновенно обновляем интерфейс для плавности
     setState(() {
       if (wasLiked) {
         post.isLiked = false;
@@ -161,10 +176,8 @@ class _MainLayoutState extends State<MainLayout> {
 
     try {
       if (wasLiked) {
-        // Удаляем запись из таблицы лайков
         await supabase.from('likes').delete().eq('post_id', postId).eq('username', myName);
       } else {
-        // Добавляем запись в таблицу лайков
         await supabase.from('likes').insert({'post_id': postId, 'username': myName});
       }
     } catch (e) {
@@ -172,9 +185,6 @@ class _MainLayoutState extends State<MainLayout> {
     }
   }
 
-  // ==========================================
-  // КОММЕНТАРИЙ (ОБЛАКО)
-  // ==========================================
   Future<void> _addComment(int index, String commentText) async {
     final postId = posts[index].id;
     if (postId == null || commentText.isEmpty) return;
@@ -186,7 +196,6 @@ class _MainLayoutState extends State<MainLayout> {
         'text': commentText,
       });
       
-      // Обновляем список локально, чтобы сразу увидеть коммент
       setState(() {
         posts[index].comments.add("$myName||$commentText");
       });
@@ -195,7 +204,6 @@ class _MainLayoutState extends State<MainLayout> {
     }
   }
 
-  // Локальное сохранение (оставляем для совместимости, хотя всё уже в БД)
   Future<void> _savePosts() async {
     final prefs = await SharedPreferences.getInstance();
     List<String> jsonPosts = posts.map((p) => jsonEncode({
@@ -421,7 +429,6 @@ class _MainLayoutState extends State<MainLayout> {
   }
 
   void _publishPost() async {
-    // Проверяем авторизацию перед публикацией
     if (currentUser == null) return;
     
     String text = _postController.text.trim();
@@ -445,7 +452,7 @@ class _MainLayoutState extends State<MainLayout> {
       }
 
       final response = await supabase.from('posts').insert({
-        'user_id': currentUser!.id, // Привязываем пост к пользователю
+        'user_id': currentUser!.id, 
         'username': myName,
         'avatar_color': Colors.orange.value, 
         'text': text,
@@ -455,22 +462,25 @@ class _MainLayoutState extends State<MainLayout> {
       }).select();
 
       setState(() {
-        posts.insert(0, Post(
-          id: response[0]['id'],
-          userId: currentUser!.id, // Записываем ID в локальный список
-          username: myName, 
-          avatarColor: Colors.orange, 
-          createdAt: DateTime.parse(response[0]['created_at']), 
-          text: text,
-          imagePath: uploadedUrl, 
-          fileName: _pickedFileName, 
-          mediaType: _currentMediaType,
-          pollOptions: _isCreatingPoll ? currentPollOptions : null,
-          pollVotes: _isCreatingPoll ? List.filled(currentPollOptions.length, 0) : null,
-          comments: [],
-          likesCount: 0,
-          isLiked: false,
-        ));
+        // Если мы находимся на вкладке "Для вас" ИЛИ мы публикуем пост (мы подписаны на себя), добавляем
+        if (!_isFollowingFeed) {
+          posts.insert(0, Post(
+            id: response[0]['id'],
+            userId: currentUser!.id, 
+            username: myName, 
+            avatarColor: Colors.orange, 
+            createdAt: DateTime.parse(response[0]['created_at']), 
+            text: text,
+            imagePath: uploadedUrl, 
+            fileName: _pickedFileName, 
+            mediaType: _currentMediaType,
+            pollOptions: _isCreatingPoll ? currentPollOptions : null,
+            pollVotes: _isCreatingPoll ? List.filled(currentPollOptions.length, 0) : null,
+            comments: [],
+            likesCount: 0,
+            isLiked: false,
+          ));
+        }
       });
 
     } catch (e) {
@@ -485,106 +495,6 @@ class _MainLayoutState extends State<MainLayout> {
       _isCreatingPoll = false; _pollControllers = [TextEditingController(), TextEditingController()];
       FocusScope.of(context).unfocus();
     });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    double screenWidth = MediaQuery.of(context).size.width;
-    bool isMobile = screenWidth < 900;
-
-    return Scaffold(
-      appBar: isMobile ? AppBar(
-        title: const Text('ChatV', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blueAccent)),
-        backgroundColor: const Color(0xFF121212),
-        elevation: 0,
-        centerTitle: true,
-        automaticallyImplyLeading: false, 
-      ) : null,
-      
-      body: Row(
-        children: [
-          if (!isMobile)
-            Expanded(
-              flex: 2, 
-              child: LeftSidebarContent(
-                activeIdx: _currentIndex, 
-                onSelect: (idx) => setState(() => _currentIndex = idx)
-              )
-            ),
-
-          Expanded(
-            flex: 5,
-            child: Container(
-              color: const Color(0xFF000000),
-              child: Align(
-                alignment: Alignment.topCenter,
-                child: SizedBox(
-                  width: isMobile ? screenWidth : 700, 
-                  child: _currentIndex == 0 
-                    ? ProfileScreen(allPosts: posts) 
-                    : (_currentIndex == 2 ? const MessagesScreen() : _buildFeed()),
-                ),
-              ),
-            ),
-          ),
-
-          if (screenWidth > 1200)
-            const Expanded(flex: 2, child: RightSidebarContent()),
-        ],
-      ),
-      
-      bottomNavigationBar: isMobile ? BottomNavigationBar(
-        backgroundColor: const Color(0xFF121212),
-        selectedItemColor: Colors.white,
-        unselectedItemColor: Colors.grey,
-        currentIndex: _currentIndex == 0 ? 3 : (_currentIndex == 2 ? 2 : 0), 
-        type: BottomNavigationBarType.fixed,
-        showSelectedLabels: false,
-        showUnselectedLabels: false,
-        onTap: (idx) {
-          if (idx == 0) setState(() => _currentIndex = 1);
-          if (idx == 2) setState(() => _currentIndex = 2);
-          if (idx == 3) setState(() => _currentIndex = 0);
-        },
-        items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.home_filled), label: ''),
-          BottomNavigationBarItem(icon: Icon(Icons.search), label: ''),
-          BottomNavigationBarItem(icon: Icon(Icons.notifications_none), label: ''),
-          BottomNavigationBarItem(icon: Icon(Icons.person_outline), label: ''),
-        ],
-      ) : null,
-    );
-  }
-
-  Widget _buildFeed() {
-    return ListView(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
-      children: [
-        const TopTabs(),
-        const SizedBox(height: 16),
-        const ClanEmojisPanel(),
-        _buildCreatePostField(),
-        const SizedBox(height: 16),
-        if (posts.isEmpty)
-          const Padding(
-            padding: EdgeInsets.only(top: 40),
-            child: Center(child: Text('Здесь пока пусто!', style: TextStyle(color: Colors.grey))),
-          )
-        else
-          ...posts.asMap().entries.map((entry) => Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: PostCard(
-              post: entry.value,
-              currentUserId: currentUser?.id, // Передаем ID для проверки владения постом
-              onLike: () => _toggleLike(entry.key),
-              onDelete: () => _deletePost(entry.key),
-              onEdit: () => _editPost(entry.key),
-              onComment: () => _showComments(entry.key),
-              onVote: () => setState(() {}), 
-            ),
-          )),
-      ],
-    );
   }
 
   Widget _buildCreatePostField() {
@@ -681,18 +591,180 @@ class _MainLayoutState extends State<MainLayout> {
       ),
     );
   }
+
+  @override
+  Widget build(BuildContext context) {
+    double screenWidth = MediaQuery.of(context).size.width;
+    bool isMobile = screenWidth < 900;
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF000000), 
+      appBar: isMobile ? AppBar(
+        title: const Text('ChatV', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blueAccent)),
+        backgroundColor: const Color(0xFF121212),
+        elevation: 0,
+        centerTitle: true,
+        automaticallyImplyLeading: false, 
+      ) : null,
+      
+      body: Row(
+        children: [
+          if (!isMobile)
+            Expanded(
+              flex: 2, 
+              child: LeftSidebarContent(
+                activeIdx: _currentIndex, 
+                onSelect: (idx) => setState(() => _currentIndex = idx)
+              )
+            ),
+
+          Expanded(
+            flex: 5,
+            child: Container(
+              color: const Color(0xFF000000),
+              child: Align(
+                alignment: Alignment.topCenter,
+                child: SizedBox(
+                  width: isMobile ? screenWidth : 700, 
+                  child: _currentIndex == 0 
+                    ? ProfileScreen(allPosts: posts) 
+                    : (_currentIndex == 2 ? const MessagesScreen() : _buildFeed()),
+                ),
+              ),
+            ),
+          ),
+          
+          if (screenWidth > 1200)
+            Expanded(
+              flex: 2, 
+              child: Container(color: const Color(0xFF000000)),
+            ),
+        ],
+      ),
+      
+      bottomNavigationBar: isMobile ? BottomNavigationBar(
+        backgroundColor: const Color(0xFF121212),
+        selectedItemColor: Colors.white,
+        unselectedItemColor: Colors.grey,
+        currentIndex: _currentIndex == 0 ? 3 : (_currentIndex == 2 ? 2 : 0), 
+        type: BottomNavigationBarType.fixed,
+        showSelectedLabels: false,
+        showUnselectedLabels: false,
+        onTap: (idx) {
+          if (idx == 0) setState(() => _currentIndex = 1);
+          if (idx == 2) setState(() => _currentIndex = 2);
+          if (idx == 3) setState(() => _currentIndex = 0);
+        },
+        items: const [
+          BottomNavigationBarItem(icon: Icon(Icons.home_filled), label: ''),
+          BottomNavigationBarItem(icon: Icon(Icons.search), label: ''),
+          BottomNavigationBarItem(icon: Icon(Icons.chat_bubble_outline), label: ''),
+          BottomNavigationBarItem(icon: Icon(Icons.person_outline), label: ''),
+        ],
+      ) : null,
+    );
+  }
+
+  Widget _buildFeed() {
+    return ListView(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+      children: [
+        // НОВОЕ: Передаем состояние и коллбэк во вкладки
+        TopTabs(
+          isFollowingFeed: _isFollowingFeed,
+          onTabChanged: (isFollowing) {
+            if (_isFollowingFeed != isFollowing) {
+              setState(() {
+                _isFollowingFeed = isFollowing;
+                posts = []; // Очищаем старые посты на долю секунды, пока грузятся новые
+              });
+              _loadPosts();
+            }
+          },
+        ),
+        const SizedBox(height: 16),
+        const ClanEmojisPanel(),
+        _buildCreatePostField(),
+        const SizedBox(height: 16),
+        if (posts.isEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 40),
+            child: Center(
+              child: Text(
+                _isFollowingFeed ? 'Вы никого не читаете или у них нет постов.' : 'Здесь пока пусто!', 
+                style: const TextStyle(color: Colors.grey),
+                textAlign: TextAlign.center,
+              )
+            ),
+          )
+        else
+          ...posts.asMap().entries.map((entry) => Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: PostCard(
+              post: entry.value,
+              currentUserId: currentUser?.id, 
+              onLike: () => _toggleLike(entry.key),
+              onDelete: () => _deletePost(entry.key),
+              onEdit: () => _editPost(entry.key),
+              onComment: () => _showComments(entry.key),
+              onVote: () => setState(() {}), 
+              onProfileTap: () {
+                if (entry.value.userId != null && entry.value.userId == currentUser?.id) {
+                  setState(() => _currentIndex = 0);
+                } else {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => Scaffold(
+                        backgroundColor: const Color(0xFF000000),
+                        appBar: AppBar(
+                          backgroundColor: const Color(0xFF121212),
+                          title: Text(entry.value.username, style: const TextStyle(color: Colors.white, fontSize: 16)),
+                          iconTheme: const IconThemeData(color: Colors.white),
+                        ),
+                        body: Align(
+                          alignment: Alignment.topCenter,
+                          child: SizedBox(
+                            width: MediaQuery.of(context).size.width < 900 ? MediaQuery.of(context).size.width : 700,
+                            child: ProfileScreen(
+                              allPosts: posts, // В будущем здесь нужно будет передавать посты с бэкенда, но пока ок
+                              targetUserId: entry.value.userId, 
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                }
+              },
+            ),
+          )),
+      ],
+    );
+  }
 }
 
 class PostCard extends StatelessWidget {
   final Post post;
-  final String? currentUserId; // Добавляем ID в карточку
+  final String? currentUserId; 
   final VoidCallback onLike;
   final VoidCallback onDelete;
   final VoidCallback onEdit;
   final VoidCallback onComment;
   final VoidCallback onVote;
+  final VoidCallback onProfileTap; 
 
-  const PostCard({super.key, required this.post, this.currentUserId, required this.onLike, required this.onDelete, required this.onEdit, required this.onComment, required this.onVote});
+  const PostCard({
+    super.key, 
+    required this.post, 
+    this.currentUserId, 
+    required this.onLike, 
+    required this.onDelete, 
+    required this.onEdit, 
+    required this.onComment, 
+    required this.onVote,
+    required this.onProfileTap, 
+  });
   
   Widget _buildMedia(Post p, BuildContext context) {
     bool isNetworkUrl = p.imagePath != null && p.imagePath!.startsWith('http');
@@ -711,7 +783,6 @@ class PostCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Проверяем, наш ли это пост
     bool isMyPost = post.userId != null && post.userId == currentUserId;
 
     return Container(
@@ -722,14 +793,21 @@ class PostCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              CircleAvatar(backgroundColor: post.avatarColor, radius: 20),
-              const SizedBox(width: 12),
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(post.username, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.white)),
-                Text('${post.createdAt.hour}:${post.createdAt.minute.toString().padLeft(2, '0')}', style: const TextStyle(color: Colors.grey, fontSize: 12)),
-              ]),
+              GestureDetector(
+                behavior: HitTestBehavior.opaque, 
+                onTap: onProfileTap,
+                child: Row(
+                  children: [
+                    CircleAvatar(backgroundColor: post.avatarColor, radius: 20),
+                    const SizedBox(width: 12),
+                    Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text(post.username, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.white)),
+                      Text('${post.createdAt.hour}:${post.createdAt.minute.toString().padLeft(2, '0')}', style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                    ]),
+                  ],
+                ),
+              ),
               const Spacer(),
-              // Показываем три точки только если это наш пост
               if (isMyPost)
                 PopupMenuButton<String>(
                   icon: const Icon(Icons.more_horiz, color: Colors.grey),
@@ -1061,7 +1139,7 @@ class LeftSidebarContent extends StatelessWidget {
           const SizedBox(height: 40),
           _item(Icons.person_outline, 'Профиль', activeIdx == 0, () => onSelect(0)),
           _item(Icons.feed, 'Лента', activeIdx == 1, () => onSelect(1)),
-          _item(Icons.notifications_none, 'Сообщения', activeIdx == 2, () => onSelect(2)),
+          _item(Icons.chat_bubble_outline, 'Сообщения', activeIdx == 2, () => onSelect(2)),
           const Spacer(),
           ListTile(
             leading: const Icon(Icons.logout, color: Colors.redAccent),
@@ -1125,42 +1203,38 @@ class ClanEmojisPanel extends StatelessWidget {
   }
 }
 
-class RightSidebarContent extends StatelessWidget {
-  const RightSidebarContent({super.key});
-  @override
-  Widget build(BuildContext context) {
-    return const Padding(
-      padding: EdgeInsets.all(30),
-      child: Column(mainAxisAlignment: MainAxisAlignment.end, crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text('Вакансии', style: TextStyle(color: Colors.grey, fontSize: 13)),
-        SizedBox(height: 12),
-        Text('Конфиденциальность', style: TextStyle(color: Colors.grey, fontSize: 13)),
-        SizedBox(height: 12),
-        Text('© 2026 ChatV', style: TextStyle(color: Colors.white24, fontSize: 12)),
-      ]),
-    );
-  }
-}
-
+// НОВОЕ: Виджет переделан для поддержки кликов и передачи состояний
 class TopTabs extends StatelessWidget {
-  const TopTabs({super.key});
+  final bool isFollowingFeed;
+  final Function(bool) onTabChanged;
+
+  const TopTabs({
+    super.key, 
+    required this.isFollowingFeed, 
+    required this.onTabChanged
+  });
+
   @override
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(4),
       decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(30)),
       child: Row(children: [
-        _t('Для вас', true),
-        _t('Подписки', false),
+        _t('Для вас', !isFollowingFeed, () => onTabChanged(false)),
+        _t('Подписки', isFollowingFeed, () => onTabChanged(true)),
       ]),
     );
   }
-  Widget _t(String text, bool active) {
+
+  Widget _t(String text, bool active, VoidCallback onTap) {
     return Expanded(
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 10),
-        decoration: BoxDecoration(color: active ? const Color(0xFF333333) : Colors.transparent, borderRadius: BorderRadius.circular(25)),
-        child: Center(child: Text(text, style: TextStyle(color: active ? Colors.white : Colors.grey, fontSize: 13))),
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          decoration: BoxDecoration(color: active ? const Color(0xFF333333) : Colors.transparent, borderRadius: BorderRadius.circular(25)),
+          child: Center(child: Text(text, style: TextStyle(color: active ? Colors.white : Colors.grey, fontSize: 13))),
+        ),
       ),
     );
   }
