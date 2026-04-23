@@ -37,11 +37,11 @@ dependencies:
   shared_preferences: ^2.5.5
   image_picker: ^1.2.1
   video_player: ^2.11.1
-  file_picker: ^10.3.10
+  file_picker: ^11.0.2
   supabase_flutter: ^2.12.2
-  record: ^5.0.5          # Добавлено для записи аудио
-  audioplayers: ^5.2.1    # Добавлено для воспроизведения аудио
-  emoji_picker_flutter: ^3.1.0  # <-- ВОТ НАШ НОВЫЙ ПАКЕТ ДЛЯ СМАЙЛИКОВ
+  record: ^6.2.0          # Добавлено для записи аудио
+  audioplayers: ^6.6.0    # Добавлено для воспроизведения аудио
+  emoji_picker_flutter: ^4.4.0  # <-- ВОТ НАШ НОВЫЙ ПАКЕТ ДЛЯ СМАЙЛИКОВ
 
 dev_dependencies:
   flutter_test:

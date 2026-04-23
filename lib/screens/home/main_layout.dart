@@ -445,12 +445,15 @@ class _MainLayoutState extends State<MainLayout> {
             title: const Text('Документ / Файл', style: TextStyle(color: Colors.white)),
             onTap: () async {
               Navigator.pop(context);
-              FilePickerResult? result = await FilePicker.platform.pickFiles();
-              if (result != null) setState(() { 
-                _pickedFile = kIsWeb ? null : XFile(result.files.single.path!); 
-                _pickedFileName = result.files.single.name; 
-                _currentMediaType = PostMediaType.file; 
-              });
+              // ИСПРАВЛЕНО: убрали .platform
+              FilePickerResult? result = await FilePicker.pickFiles();
+              if (result != null) {
+                setState(() { 
+                  _pickedFile = kIsWeb ? null : XFile(result.files.single.path!); 
+                  _pickedFileName = result.files.single.name; 
+                  _currentMediaType = PostMediaType.file; 
+                });
+              }
             },
           ),
           const SizedBox(height: 20),
@@ -1035,7 +1038,7 @@ class PostCard extends StatelessWidget {
                       ? post.pollVotes![index] 
                       : 0;
 
-                  // Вычисляем проценты
+                  // ИСПРАВЛЕНО: добавлено <int> в функцию fold, чтобы Dart не выдавал ошибку Null Safety
                   int totalVotes = post.pollVotes?.fold<int>(0, (int sum, int item) => sum + item) ?? 0;
                   double percentage = totalVotes > 0 ? (votes / totalVotes) : 0.0;
                   int percentInt = (percentage * 100).round();
@@ -1051,10 +1054,9 @@ class PostCard extends StatelessWidget {
                     },
                     child: Container(
                       margin: const EdgeInsets.only(bottom: 8),
-                      height: 48, // Фиксированная высота кнопки опроса
+                      height: 48, 
                       child: Stack(
                         children: [
-                          // 1. Базовый фон кнопки
                           Container(
                             decoration: BoxDecoration(
                               color: const Color(0xFF333333),
@@ -1063,7 +1065,6 @@ class PostCard extends StatelessWidget {
                             ),
                           ),
                           
-                          // 2. Полоса заполнения процента (показывается только после голосования)
                           if (hasVoted)
                             FractionallySizedBox(
                               widthFactor: percentage,
@@ -1075,7 +1076,6 @@ class PostCard extends StatelessWidget {
                               ),
                             ),
                             
-                          // 3. Текст варианта и проценты
                           Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 16),
                             child: Row(

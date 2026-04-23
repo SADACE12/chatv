@@ -330,7 +330,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
     final peerId = selectedChat?.id;
     if (myId == null || peerId == null) return;
 
-    FilePickerResult? result = await FilePicker.platform.pickFiles(withData: true);
+    FilePickerResult? result = await FilePicker.pickFiles(withData: true);
     if (result == null || result.files.isEmpty) return;
 
     setState(() => _isUploading = true); 
