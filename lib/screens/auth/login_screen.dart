@@ -171,7 +171,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     const SizedBox(height: 8),
                     _buildTextField(
                       controller: _passwordController,
-                      hint: '••••••••••••',
+                      hint: 'password',
                       isPassword: true,
                       obscure: _obscurePassword,
                       onToggleVisibility: () {

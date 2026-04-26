@@ -101,9 +101,15 @@ class _MainLayoutState extends State<MainLayout> {
   Future<void> _loadPosts() async {
     if (currentUser == null) return;
     
-    // Получаем локальные данные, чтобы помнить, где мы уже голосовали
     final prefs = await SharedPreferences.getInstance();
     
+    // Всегда берем самое свежее имя перед загрузкой постов
+    if (mounted) {
+      setState(() {
+        myName = prefs.getString('userName') ?? currentUser!.email!.split('@')[0];
+      });
+    }
+
     try {
       List<dynamic> data = [];
 
@@ -149,13 +155,12 @@ class _MainLayoutState extends State<MainLayout> {
               fileName: map['file_name'],
               mediaType: PostMediaType.values[map['media_type'] ?? 0],
               likesCount: likesList.length,
-              isLiked: likesList.any((like) => like['username'] == myName),
+              isLiked: likesList.any((like) => like['username'] == myName), // Проверка актуальным именем
               comments: commentsList.map((c) => "${c['username']}||${c['text']}").toList(),
               pollOptions: map['poll_options'] != null ? List<String>.from(map['poll_options']) : null,
               pollVotes: map['poll_votes'] != null ? List<int>.from(map['poll_votes']) : null,
             );
             
-            // Восстанавливаем информацию о нашем голосе
             post.votedOptionIndex = prefs.getInt('voted_poll_${map['id']}');
             
             return post;
@@ -167,20 +172,20 @@ class _MainLayoutState extends State<MainLayout> {
     }
   }
 
-  void _toggleLike(int index) async {
-    final post = posts[index];
+  void _toggleLike(Post post) async {
     final postId = post.id;
     if (postId == null) return;
 
     final bool wasLiked = post.isLiked;
 
     setState(() {
-      if (wasLiked) {
-        post.isLiked = false;
-        post.likesCount--;
-      } else {
-        post.isLiked = true;
-        post.likesCount++;
+      post.isLiked = !wasLiked;
+      post.likesCount += wasLiked ? -1 : 1;
+      
+      int idx = posts.indexWhere((p) => p.id == postId);
+      if (idx != -1 && posts[idx] != post) {
+        posts[idx].isLiked = post.isLiked;
+        posts[idx].likesCount = post.likesCount;
       }
     });
 
@@ -195,23 +200,25 @@ class _MainLayoutState extends State<MainLayout> {
     }
   }
 
-  Future<void> _handleVote(int postIndex, int optionIndex) async {
-    final post = posts[postIndex];
+  Future<void> _handleVote(Post post, int optionIndex) async {
     if (post.id == null || post.pollVotes == null) return;
 
-    // Если уже голосовал, блокируем повторное нажатие
     if (post.votedOptionIndex != null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Вы уже проголосовали!')));
       return;
     }
 
-    // Обновляем UI мгновенно
     setState(() {
       post.pollVotes![optionIndex]++;
-      post.votedOptionIndex = optionIndex; // Запоминаем выбор
+      post.votedOptionIndex = optionIndex; 
+
+      int idx = posts.indexWhere((p) => p.id == post.id);
+      if (idx != -1 && posts[idx] != post) {
+        posts[idx].pollVotes![optionIndex] = post.pollVotes![optionIndex];
+        posts[idx].votedOptionIndex = optionIndex;
+      }
     });
 
-    // Сохраняем в память телефона, чтобы не забыть после перезапуска приложения
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('voted_poll_${post.id}', optionIndex);
 
@@ -227,8 +234,8 @@ class _MainLayoutState extends State<MainLayout> {
     }
   }
 
-  Future<void> _addComment(int index, String commentText) async {
-    final postId = posts[index].id;
+  Future<void> _addComment(Post post, String commentText) async {
+    final postId = post.id;
     if (postId == null || commentText.isEmpty) return;
 
     try {
@@ -239,14 +246,21 @@ class _MainLayoutState extends State<MainLayout> {
       });
       
       setState(() {
-        posts[index].comments.add("$myName||$commentText");
+        post.comments.add("$myName||$commentText");
+        
+        int idx = posts.indexWhere((p) => p.id == postId);
+        if (idx != -1 && posts[idx] != post) {
+          if (!posts[idx].comments.contains("$myName||$commentText")) {
+            posts[idx].comments.add("$myName||$commentText");
+          }
+        }
       });
     } catch (e) {
       print('Ошибка при отправке комментария: $e');
     }
   }
 
-  void _deletePost(int index) {
+  void _deletePost(Post post) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -258,23 +272,18 @@ class _MainLayoutState extends State<MainLayout> {
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
             onPressed: () async {
-              final postToDelete = posts[index];
-              final postId = postToDelete.id;
-
+              final postId = post.id;
               Navigator.pop(context);
 
               if (postId == null) return;
 
               setState(() {
-                posts.removeAt(index);
+                posts.removeWhere((p) => p.id == postId);
               });
 
               try {
                 await supabase.from('posts').delete().eq('id', postId);
               } catch (e) {
-                setState(() {
-                  posts.insert(index, postToDelete);
-                });
                 ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка БД: $e'), backgroundColor: Colors.red));
               }
             },
@@ -285,8 +294,8 @@ class _MainLayoutState extends State<MainLayout> {
     );
   }
 
-  void _editPost(int index) {
-    TextEditingController editController = TextEditingController(text: posts[index].text);
+  void _editPost(Post post) {
+    TextEditingController editController = TextEditingController(text: post.text);
     
     showDialog(
       context: context, 
@@ -308,14 +317,20 @@ class _MainLayoutState extends State<MainLayout> {
             ElevatedButton(
               onPressed: () async {
                 final newText = editController.text.trim();
-                final postId = posts[index].id;
+                final postId = post.id;
                 Navigator.pop(dialogContext);
 
                 if (postId == null) return;
 
                 try {
                   await supabase.from('posts').update({'text': newText}).eq('id', postId);
-                  if (mounted) setState(() => posts[index].text = newText);
+                  if (mounted) {
+                    setState(() {
+                      post.text = newText;
+                      int idx = posts.indexWhere((p) => p.id == postId);
+                      if (idx != -1) posts[idx].text = newText;
+                    });
+                  }
                 } catch (e) {
                   if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка БД: $e'), backgroundColor: Colors.red));
                 }
@@ -329,88 +344,47 @@ class _MainLayoutState extends State<MainLayout> {
     );
   }
 
-  void _showComments(int index) {
-    TextEditingController commentController = TextEditingController();
-    
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: const Color(0xFF1E1E1E),
-      isScrollControlled: true, 
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (context) {
-        return Padding(
-          padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
-          child: StatefulBuilder(
-            builder: (context, setSheetState) {
-              return Container(
-                height: 450,
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  children: [
-                    Container(width: 40, height: 4, decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(2))),
-                    const SizedBox(height: 15),
-                    const Text('Комментарии', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
-                    const Divider(height: 30, color: Colors.white10),
-                    Expanded(
-                      child: posts[index].comments.isEmpty
-                          ? const Center(child: Text('Пока нет комментариев', style: TextStyle(color: Colors.grey)))
-                          : ListView.builder(
-                              itemCount: posts[index].comments.length,
-                              itemBuilder: (c, i) {
-                                String rawText = posts[index].comments[i];
-                                String author = "Аноним";
-                                String text = rawText;
-
-                                if (rawText.contains('||')) {
-                                  final parts = rawText.split('||');
-                                  author = parts[0];
-                                  text = parts[1];
-                                }
-
-                                return ListTile(
-                                  leading: const CircleAvatar(radius: 16, backgroundColor: Colors.orange, child: Icon(Icons.person, size: 16, color: Colors.white)),
-                                  title: Text(author, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
-                                  subtitle: Text(text, style: const TextStyle(color: Colors.grey)),
-                                );
-                              },
-                            ),
+  void _openPostDetails(Post post) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => PostDetailScreen(
+          post: post,
+          currentUserId: currentUser?.id,
+          onLike: () => _toggleLike(post),
+          onDelete: () {
+            _deletePost(post);
+            Navigator.pop(context); 
+          },
+          onEdit: () => _editPost(post),
+          onVote: (optionIndex) => _handleVote(post, optionIndex),
+          onAddComment: (text) async => await _addComment(post, text),
+          onProfileTap: () {
+            if (post.userId != null && post.userId == currentUser?.id) {
+              Navigator.pop(context);
+              setState(() => _currentIndex = 0);
+            } else {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => Scaffold(
+                    backgroundColor: const Color(0xFF000000),
+                    appBar: AppBar(
+                      backgroundColor: const Color(0xFF121212),
+                      title: Text(post.username, style: const TextStyle(color: Colors.white)),
+                      iconTheme: const IconThemeData(color: Colors.white),
                     ),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: commentController,
-                            style: const TextStyle(color: Colors.white),
-                            decoration: InputDecoration(
-                              hintText: 'Написать...',
-                              hintStyle: const TextStyle(color: Colors.grey),
-                              filled: true,
-                              fillColor: const Color(0xFF333333),
-                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide.none),
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                            ),
-                          ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.send, color: Colors.blueAccent),
-                          onPressed: () async {
-                            if (commentController.text.trim().isNotEmpty) {
-                              await _addComment(index, commentController.text.trim());
-                              setSheetState(() {}); 
-                              commentController.clear();
-                            }
-                          },
-                        )
-                      ],
-                    )
-                  ],
+                    body: ProfileScreen(allPosts: posts, targetUserId: post.userId),
+                  ),
                 ),
               );
             }
-          ),
-        );
-      }
-    );
+          },
+        ),
+      ),
+    ).then((_) {
+      setState(() {});
+    });
   }
 
   void _showPickerOptions() {
@@ -445,7 +419,6 @@ class _MainLayoutState extends State<MainLayout> {
             title: const Text('Документ / Файл', style: TextStyle(color: Colors.white)),
             onTap: () async {
               Navigator.pop(context);
-              // ИСПРАВЛЕНО: убрали .platform
               FilePickerResult? result = await FilePicker.pickFiles();
               if (result != null) {
                 setState(() { 
@@ -815,17 +788,17 @@ class _MainLayoutState extends State<MainLayout> {
           )
         else
           ...searchResults.map((post) {
-            int originalIndex = posts.indexOf(post);
             return Padding(
               padding: const EdgeInsets.only(bottom: 12),
               child: PostCard(
                 post: post,
                 currentUserId: currentUser?.id, 
-                onLike: () => _toggleLike(originalIndex),
-                onDelete: () => _deletePost(originalIndex),
-                onEdit: () => _editPost(originalIndex),
-                onComment: () => _showComments(originalIndex),
-                onVote: (optionIndex) => _handleVote(originalIndex, optionIndex), 
+                onPostTap: () => _openPostDetails(post),
+                onLike: () => _toggleLike(post),
+                onDelete: () => _deletePost(post),
+                onEdit: () => _editPost(post),
+                onComment: () => _openPostDetails(post), 
+                onVote: (optionIndex) => _handleVote(post, optionIndex), 
                 onProfileTap: () {
                   if (post.userId != null && post.userId == currentUser?.id) {
                     setState(() => _currentIndex = 0);
@@ -894,18 +867,19 @@ class _MainLayoutState extends State<MainLayout> {
             ),
           )
         else
-          ...posts.asMap().entries.map((entry) => Padding(
+          ...posts.map((post) => Padding(
             padding: const EdgeInsets.only(bottom: 12),
             child: PostCard(
-              post: entry.value,
-              currentUserId: currentUser?.id, 
-              onLike: () => _toggleLike(entry.key),
-              onDelete: () => _deletePost(entry.key),
-              onEdit: () => _editPost(entry.key),
-              onComment: () => _showComments(entry.key),
-              onVote: (optionIndex) => _handleVote(entry.key, optionIndex), 
+              post: post,
+              currentUserId: currentUser?.id,
+              onPostTap: () => _openPostDetails(post),
+              onLike: () => _toggleLike(post),
+              onDelete: () => _deletePost(post),
+              onEdit: () => _editPost(post),
+              onComment: () => _openPostDetails(post), 
+              onVote: (optionIndex) => _handleVote(post, optionIndex), 
               onProfileTap: () {
-                if (entry.value.userId != null && entry.value.userId == currentUser?.id) {
+                if (post.userId != null && post.userId == currentUser?.id) {
                   setState(() => _currentIndex = 0);
                 } else {
                   Navigator.push(
@@ -915,7 +889,7 @@ class _MainLayoutState extends State<MainLayout> {
                         backgroundColor: const Color(0xFF000000),
                         appBar: AppBar(
                           backgroundColor: const Color(0xFF121212),
-                          title: Text(entry.value.username, style: const TextStyle(color: Colors.white, fontSize: 16)),
+                          title: Text(post.username, style: const TextStyle(color: Colors.white, fontSize: 16)),
                           iconTheme: const IconThemeData(color: Colors.white),
                         ),
                         body: Align(
@@ -924,7 +898,7 @@ class _MainLayoutState extends State<MainLayout> {
                             width: MediaQuery.of(context).size.width < 900 ? MediaQuery.of(context).size.width : 700,
                             child: ProfileScreen(
                               allPosts: posts,
-                              targetUserId: entry.value.userId, 
+                              targetUserId: post.userId, 
                             ),
                           ),
                         ),
@@ -948,7 +922,8 @@ class PostCard extends StatelessWidget {
   final VoidCallback onEdit;
   final VoidCallback onComment;
   final Function(int) onVote;
-  final VoidCallback onProfileTap; 
+  final VoidCallback onProfileTap;
+  final VoidCallback? onPostTap; 
 
   const PostCard({
     super.key, 
@@ -959,7 +934,8 @@ class PostCard extends StatelessWidget {
     required this.onEdit, 
     required this.onComment, 
     required this.onVote,
-    required this.onProfileTap, 
+    required this.onProfileTap,
+    this.onPostTap, 
   });
   
   Widget _buildMedia(Post p, BuildContext context) {
@@ -981,154 +957,169 @@ class PostCard extends StatelessWidget {
   Widget build(BuildContext context) {
     bool isMyPost = post.userId != null && post.userId == currentUserId;
 
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(16)),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              GestureDetector(
-                behavior: HitTestBehavior.opaque, 
-                onTap: onProfileTap,
-                child: Row(
-                  children: [
-                    CircleAvatar(backgroundColor: post.avatarColor, radius: 20),
-                    const SizedBox(width: 12),
-                    Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Text(post.username, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.white)),
-                      Text('${post.createdAt.hour}:${post.createdAt.minute.toString().padLeft(2, '0')}', style: const TextStyle(color: Colors.grey, fontSize: 12)),
-                    ]),
-                  ],
+    return GestureDetector(
+      onTap: onPostTap,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(16)),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque, 
+                  onTap: onProfileTap,
+                  child: Row(
+                    children: [
+                      CircleAvatar(backgroundColor: post.avatarColor, radius: 20),
+                      const SizedBox(width: 12),
+                      Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text(post.username, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.white)),
+                        Text('${post.createdAt.hour}:${post.createdAt.minute.toString().padLeft(2, '0')}', style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                      ]),
+                    ],
+                  ),
                 ),
-              ),
-              const Spacer(),
-              if (isMyPost)
-                PopupMenuButton<String>(
-                  icon: const Icon(Icons.more_horiz, color: Colors.grey),
-                  color: const Color(0xFF333333),
-                  onSelected: (val) {
-                    if (val == 'edit') onEdit();
-                    if (val == 'delete') onDelete();
-                  },
-                  itemBuilder: (c) => [
-                    const PopupMenuItem(value: 'edit', child: Text('Редактировать', style: TextStyle(color: Colors.white))),
-                    const PopupMenuItem(value: 'delete', child: Text('Удалить', style: TextStyle(color: Colors.redAccent))),
-                  ],
-                ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          if (post.text.isNotEmpty) Text(post.text, style: const TextStyle(fontSize: 15, height: 1.4, color: Colors.white)),
-          
-          if (post.imagePath != null || post.fileName != null) 
-            Padding(
-              padding: const EdgeInsets.only(top: 12), 
-              child: ClipRRect(borderRadius: BorderRadius.circular(12), child: _buildMedia(post, context))
-            ),
-
-          if (post.pollOptions != null && post.pollOptions!.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 12),
-              child: Column(
-                children: List.generate(post.pollOptions!.length, (index) {
-                  final option = post.pollOptions![index];
-                  final votes = (post.pollVotes != null && post.pollVotes!.length > index) 
-                      ? post.pollVotes![index] 
-                      : 0;
-
-                  // ИСПРАВЛЕНО: добавлено <int> в функцию fold, чтобы Dart не выдавал ошибку Null Safety
-                  int totalVotes = post.pollVotes?.fold<int>(0, (int sum, int item) => sum + item) ?? 0;
-                  double percentage = totalVotes > 0 ? (votes / totalVotes) : 0.0;
-                  int percentInt = (percentage * 100).round();
-                  
-                  bool hasVoted = post.votedOptionIndex != null;
-                  bool isSelected = post.votedOptionIndex == index;
-
-                  return GestureDetector(
-                    onTap: () {
-                      if (!hasVoted) {
-                        onVote(index);
-                      }
+                const Spacer(),
+                if (isMyPost)
+                  PopupMenuButton<String>(
+                    icon: const Icon(Icons.more_horiz, color: Colors.grey),
+                    color: const Color(0xFF333333),
+                    onSelected: (val) {
+                      if (val == 'edit') onEdit();
+                      if (val == 'delete') onDelete();
                     },
-                    child: Container(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      height: 48, 
-                      child: Stack(
-                        children: [
-                          Container(
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF333333),
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: isSelected ? Colors.blueAccent : Colors.transparent, width: 1.5),
-                            ),
-                          ),
-                          
-                          if (hasVoted)
-                            FractionallySizedBox(
-                              widthFactor: percentage,
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  color: isSelected ? Colors.blueAccent.withOpacity(0.3) : Colors.white24,
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
+                    itemBuilder: (c) => [
+                      const PopupMenuItem(value: 'edit', child: Text('Редактировать', style: TextStyle(color: Colors.white))),
+                      const PopupMenuItem(value: 'delete', child: Text('Удалить', style: TextStyle(color: Colors.redAccent))),
+                    ],
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            if (post.text.isNotEmpty) Text(post.text, style: const TextStyle(fontSize: 15, height: 1.4, color: Colors.white)),
+            
+            if (post.imagePath != null || post.fileName != null) 
+              Padding(
+                padding: const EdgeInsets.only(top: 12), 
+                child: ClipRRect(borderRadius: BorderRadius.circular(12), child: _buildMedia(post, context))
+              ),
+
+            if (post.pollOptions != null && post.pollOptions!.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: Column(
+                  children: List.generate(post.pollOptions!.length, (index) {
+                    final option = post.pollOptions![index];
+                    final votes = (post.pollVotes != null && post.pollVotes!.length > index) 
+                        ? post.pollVotes![index] 
+                        : 0;
+
+                    int totalVotes = post.pollVotes?.fold<int>(0, (int sum, int item) => sum + item) ?? 0;
+                    double percentage = totalVotes > 0 ? (votes / totalVotes) : 0.0;
+                    int percentInt = (percentage * 100).round();
+                    
+                    bool hasVoted = post.votedOptionIndex != null;
+                    bool isSelected = post.votedOptionIndex == index;
+
+                    return GestureDetector(
+                      onTap: () {
+                        if (!hasVoted) onVote(index);
+                      },
+                      child: Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        height: 48, 
+                        child: Stack(
+                          children: [
+                            Container(
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF333333),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(color: isSelected ? Colors.blueAccent : Colors.transparent, width: 1.5),
                               ),
                             ),
                             
-                          Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 16),
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Expanded(
-                                  child: Align(
-                                    alignment: Alignment.centerLeft,
-                                    child: Text(option, style: const TextStyle(color: Colors.white, fontSize: 14))
-                                  )
-                                ),
-                                if (hasVoted)
-                                  Align(
-                                    alignment: Alignment.centerRight,
-                                    child: Text('$votes ($percentInt%)', style: const TextStyle(color: Colors.grey, fontSize: 13, fontWeight: FontWeight.bold))
+                            if (hasVoted)
+                              FractionallySizedBox(
+                                widthFactor: percentage,
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    color: isSelected ? Colors.blueAccent.withOpacity(0.3) : Colors.white24,
+                                    borderRadius: BorderRadius.circular(12),
                                   ),
-                              ],
+                                ),
+                              ),
+                              
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Expanded(
+                                    child: Align(
+                                      alignment: Alignment.centerLeft,
+                                      child: Text(option, style: const TextStyle(color: Colors.white, fontSize: 14))
+                                    )
+                                  ),
+                                  if (hasVoted)
+                                    Align(
+                                      alignment: Alignment.centerRight,
+                                      child: Text('$votes ($percentInt%)', style: const TextStyle(color: Colors.grey, fontSize: 13, fontWeight: FontWeight.bold))
+                                    ),
+                                ],
+                              ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
-                    ),
-                  );
-                }),
+                    );
+                  }),
+                ),
               ),
-            ),
-            
-          const SizedBox(height: 16),
-          Row(children: [
-            GestureDetector(
-              onTap: onLike, 
-              child: Row(children: [
-                Icon(post.isLiked ? Icons.favorite : Icons.favorite_border, size: 20, color: post.isLiked ? Colors.red : Colors.grey), 
-                const SizedBox(width: 6), 
-                Text('${post.likesCount}', style: const TextStyle(color: Colors.grey))
-              ])
-            ),
-            const SizedBox(width: 20),
-            
-            GestureDetector(
-              onTap: onComment,
-              child: Row(children: [
-                const Icon(Icons.mode_comment_outlined, size: 20, color: Colors.grey),
-                const SizedBox(width: 6), 
-                Text('${post.comments.length}', style: const TextStyle(color: Colors.grey))
-              ])
-            ),
-            
-            const Spacer(),
-            const Icon(Icons.remove_red_eye_outlined, size: 18, color: Colors.grey),
-            const SizedBox(width: 6), const Text('1', style: TextStyle(color: Colors.grey)),
-          ]),
-        ],
+              
+            const SizedBox(height: 16),
+            Row(children: [
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: onLike, 
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4.0, horizontal: 8.0),
+                  child: Row(children: [
+                    Icon(post.isLiked ? Icons.favorite : Icons.favorite_border, size: 20, color: post.isLiked ? Colors.red : Colors.grey), 
+                    const SizedBox(width: 6), 
+                    Text('${post.likesCount}', style: const TextStyle(color: Colors.grey))
+                  ]),
+                )
+              ),
+              const SizedBox(width: 12),
+              
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: onComment,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4.0, horizontal: 8.0),
+                  child: Row(children: [
+                    const Icon(Icons.mode_comment_outlined, size: 20, color: Colors.grey),
+                    const SizedBox(width: 6), 
+                    Text('${post.comments.length}', style: const TextStyle(color: Colors.grey))
+                  ]),
+                )
+              ),
+              
+              const Spacer(),
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 4.0, horizontal: 8.0),
+                child: Row(children: [
+                  Icon(Icons.remove_red_eye_outlined, size: 18, color: Colors.grey),
+                  SizedBox(width: 6), 
+                  Text('1', style: TextStyle(color: Colors.grey)),
+                ]),
+              ),
+            ]),
+          ],
+        ),
       ),
     );
   }
@@ -1505,6 +1496,156 @@ class TopTabs extends StatelessWidget {
           padding: const EdgeInsets.symmetric(vertical: 10),
           decoration: BoxDecoration(color: active ? const Color(0xFF333333) : Colors.transparent, borderRadius: BorderRadius.circular(25)),
           child: Center(child: Text(text, style: TextStyle(color: active ? Colors.white : Colors.grey, fontSize: 13))),
+        ),
+      ),
+    );
+  }
+}
+
+class PostDetailScreen extends StatefulWidget {
+  final Post post;
+  final String? currentUserId;
+  final VoidCallback onLike;
+  final VoidCallback onDelete;
+  final VoidCallback onEdit;
+  final Function(int) onVote;
+  final VoidCallback onProfileTap;
+  final Future<void> Function(String) onAddComment;
+
+  const PostDetailScreen({
+    super.key,
+    required this.post,
+    this.currentUserId,
+    required this.onLike,
+    required this.onDelete,
+    required this.onEdit,
+    required this.onVote,
+    required this.onProfileTap,
+    required this.onAddComment,
+  });
+
+  @override
+  State<PostDetailScreen> createState() => _PostDetailScreenState();
+}
+
+class _PostDetailScreenState extends State<PostDetailScreen> {
+  final TextEditingController _commentController = TextEditingController();
+  bool _isSubmitting = false;
+
+  @override
+  Widget build(BuildContext context) {
+    double screenWidth = MediaQuery.of(context).size.width;
+    return Scaffold(
+      backgroundColor: const Color(0xFF000000),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF121212),
+        title: const Text('Запись', style: TextStyle(color: Colors.white)),
+        iconTheme: const IconThemeData(color: Colors.white),
+      ),
+      body: Center(
+        child: SizedBox(
+          width: screenWidth < 900 ? screenWidth : 700, 
+          child: Column(
+            children: [
+              Expanded(
+                child: ListView(
+                  children: [
+                    PostCard(
+                      post: widget.post,
+                      currentUserId: widget.currentUserId,
+                      onLike: () {
+                        widget.onLike();
+                        setState(() {}); 
+                      },
+                      onDelete: widget.onDelete,
+                      onEdit: widget.onEdit,
+                      onComment: () {}, 
+                      onPostTap: null, 
+                      onVote: (idx) {
+                        widget.onVote(idx);
+                        setState(() {}); 
+                      },
+                      onProfileTap: widget.onProfileTap,
+                    ),
+                    const Divider(color: Colors.white10, height: 1),
+                    if (widget.post.comments.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.all(32.0),
+                        child: Center(child: Text('Пока нет комментариев', style: TextStyle(color: Colors.grey))),
+                      )
+                    else
+                      ...widget.post.comments.map((rawText) {
+                        String author = "Аноним";
+                        String text = rawText;
+                        if (rawText.contains('||')) {
+                          final parts = rawText.split('||');
+                          author = parts[0];
+                          text = parts[1];
+                        }
+                        return ListTile(
+                          leading: const CircleAvatar(radius: 20, backgroundColor: Colors.orange, child: Icon(Icons.person, size: 20, color: Colors.white)),
+                          title: Text(author, style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
+                          subtitle: Padding(
+                            padding: const EdgeInsets.only(top: 4.0),
+                            child: Text(text, style: const TextStyle(color: Colors.white70, fontSize: 14)),
+                          ),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        );
+                      }).toList(),
+                  ],
+                ),
+              ),
+              Container(
+                padding: EdgeInsets.only(
+                  left: 16,
+                  right: 16,
+                  top: 12,
+                  bottom: MediaQuery.of(context).padding.bottom + 12,
+                ),
+                decoration: const BoxDecoration(
+                  color: Color(0xFF1E1E1E),
+                  border: Border(top: BorderSide(color: Colors.white10)),
+                ),
+                child: Row(
+                  children: [
+                    const CircleAvatar(
+                      radius: 18,
+                      backgroundColor: Colors.orange,
+                      child: Icon(Icons.person, size: 18, color: Colors.white),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: TextField(
+                        controller: _commentController,
+                        style: const TextStyle(color: Colors.white),
+                        decoration: InputDecoration(
+                          hintText: 'Ответить ${widget.post.username}...',
+                          hintStyle: const TextStyle(color: Colors.grey),
+                          border: InputBorder.none,
+                        ),
+                      ),
+                    ),
+                    _isSubmitting
+                        ? const Padding(
+                            padding: EdgeInsets.all(8.0), 
+                            child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                          )
+                        : IconButton(
+                            icon: const Icon(Icons.send, color: Colors.blueAccent),
+                            onPressed: () async {
+                              if (_commentController.text.trim().isNotEmpty) {
+                                setState(() => _isSubmitting = true);
+                                await widget.onAddComment(_commentController.text.trim());
+                                _commentController.clear();
+                                setState(() => _isSubmitting = false);
+                              }
+                            },
+                          )
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

@@ -45,11 +45,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
       final prefs = await SharedPreferences.getInstance();
       String defaultName = currentUser?.email?.split('@')[0] ?? "user";
 
+      final metadata = currentUser?.userMetadata ?? {};
+
       setState(() {
-        userName = prefs.getString('userName') ?? defaultName;
-        userHandle = "@${prefs.getString('userHandle') ?? defaultName.toLowerCase()}";
-        userEmoji = prefs.getString('userEmoji') ?? "😘";
-        userBio = prefs.getString('userBio') ?? "";
+        userName = metadata['userName'] ?? prefs.getString('userName') ?? defaultName;
+        userHandle = "@${metadata['userHandle'] ?? prefs.getString('userHandle') ?? defaultName.toLowerCase()}";
+        userEmoji = metadata['userEmoji'] ?? prefs.getString('userEmoji') ?? "😘";
+        userBio = metadata['userBio'] ?? prefs.getString('userBio') ?? "";
       });
     } else {
       final userPosts = widget.allPosts.where((p) => p.userId == widget.targetUserId).toList();
@@ -146,7 +148,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         currentHandle: userHandle.replaceAll('@', ''),
         currentBio: userBio,
       ),
-    ).then((_) => _loadUserData());
+    ).then((_) => _loadUserData()); 
   }
 
   @override
@@ -378,7 +380,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     onComment: () {
                       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Перейдите в ленту, чтобы оставить комментарий')));
                     }, 
-                    onVote: (int index) => setState(() { _savePosts(); }), // <-- ИСПРАВЛЕНА ОШИБКА
+                    onVote: (int index) => setState(() { _savePosts(); }),
                     onProfileTap: () {}, 
                   ),
                 )),
@@ -410,8 +412,14 @@ class SettingsDialog extends StatefulWidget {
 }
 
 class _SettingsDialogState extends State<SettingsDialog> {
+  final supabase = Supabase.instance.client;
+  bool _isLoading = false;
+
   String activeCategory = "Аккаунт";
+  
   bool onlineStatus = true;
+  String wallPrivacy = 'Все';
+  String likesPrivacy = 'Все';
 
   late TextEditingController _nameController;
   late TextEditingController _handleController;
@@ -423,6 +431,17 @@ class _SettingsDialogState extends State<SettingsDialog> {
     _nameController = TextEditingController(text: widget.currentName);
     _handleController = TextEditingController(text: widget.currentHandle);
     _bioController = TextEditingController(text: widget.currentBio);
+
+    _loadPrivacySettings();
+  }
+
+  void _loadPrivacySettings() {
+    final metadata = supabase.auth.currentUser?.userMetadata ?? {};
+    setState(() {
+      onlineStatus = metadata['onlineStatus'] ?? true;
+      wallPrivacy = metadata['wallPrivacy'] ?? 'Все';
+      likesPrivacy = metadata['likesPrivacy'] ?? 'Все';
+    });
   }
 
   @override
@@ -434,12 +453,131 @@ class _SettingsDialogState extends State<SettingsDialog> {
   }
 
   Future<void> _saveProfile() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('userName', _nameController.text.trim());
-    await prefs.setString('userHandle', _handleController.text.trim());
-    await prefs.setString('userBio', _bioController.text.trim());
-    
-    if (mounted) Navigator.pop(context);
+    setState(() => _isLoading = true);
+    try {
+      final name = _nameController.text.trim();
+      final handle = _handleController.text.trim();
+      final bio = _bioController.text.trim();
+
+      final prefs = await SharedPreferences.getInstance();
+      final oldName = prefs.getString('userName') ?? supabase.auth.currentUser?.email?.split('@')[0]; 
+
+      await prefs.setString('userName', name);
+      await prefs.setString('userHandle', handle);
+      await prefs.setString('userBio', bio);
+      
+      await supabase.auth.updateUser(
+        UserAttributes(
+          data: {
+            'userName': name,
+            'userHandle': handle,
+            'userBio': bio,
+            'onlineStatus': onlineStatus,
+            'wallPrivacy': wallPrivacy,
+            'likesPrivacy': likesPrivacy,
+          },
+        ),
+      );
+
+      final userId = supabase.auth.currentUser?.id;
+      if (userId != null) {
+        await supabase.from('posts').update({'username': name}).eq('user_id', userId);
+        
+        if (oldName != null && oldName != name) {
+          await supabase.from('likes').update({'username': name}).eq('username', oldName);
+          await supabase.from('comments').update({'username': name}).eq('username', oldName);
+        }
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Профиль успешно обновлен!'), backgroundColor: Colors.green));
+        Navigator.pop(context);
+      }
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка обновления: $e'), backgroundColor: Colors.red));
+    } finally {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  void _changePassword() {
+    TextEditingController passController = TextEditingController();
+    TextEditingController passConfirmController = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.card,
+        title: Text('Сменить пароль', style: TextStyle(color: AppColors.text)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: passController,
+              obscureText: true,
+              style: TextStyle(color: AppColors.text),
+              decoration: InputDecoration(
+                hintText: 'Новый пароль',
+                hintStyle: TextStyle(color: AppColors.textSub),
+                filled: true,
+                fillColor: AppColors.input,
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: passConfirmController,
+              obscureText: true,
+              style: TextStyle(color: AppColors.text),
+              decoration: InputDecoration(
+                hintText: 'Повторите пароль',
+                hintStyle: TextStyle(color: AppColors.textSub),
+                filled: true,
+                fillColor: AppColors.input,
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(child: const Text('Отмена', style: TextStyle(color: Colors.grey)), onPressed: () => Navigator.pop(ctx)),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent),
+            onPressed: () async {
+              if (passController.text.length < 6) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Пароль должен быть минимум 6 символов')));
+                return;
+              }
+              if (passController.text != passConfirmController.text) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Пароли не совпадают')));
+                return;
+              }
+              
+              Navigator.pop(ctx); 
+              setState(() => _isLoading = true);
+
+              try {
+                await supabase.auth.updateUser(UserAttributes(password: passController.text));
+                if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Пароль успешно изменен!'), backgroundColor: Colors.green));
+              } catch (e) {
+                if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e'), backgroundColor: Colors.red));
+              } finally {
+                setState(() => _isLoading = false);
+              }
+            },
+            child: const Text('Сохранить', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _updatePrivacySetting(String key, dynamic value) async {
+    try {
+      await supabase.auth.updateUser(UserAttributes(data: {key: value}));
+    } catch (e) {
+      print('Ошибка обновления приватности: $e');
+    }
   }
 
   @override
@@ -461,7 +599,17 @@ class _SettingsDialogState extends State<SettingsDialog> {
                 color: AppColors.card,
                 borderRadius: BorderRadius.circular(24),
               ),
-              child: isMobile ? _buildMobileLayout() : _buildDesktopLayout(),
+              child: Stack(
+                children: [
+                  isMobile ? _buildMobileLayout() : _buildDesktopLayout(),
+                  
+                  if (_isLoading)
+                    Container(
+                      decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(24)),
+                      child: const Center(child: CircularProgressIndicator(color: Colors.blueAccent)),
+                    ),
+                ],
+              ),
             ),
           ),
         );
@@ -648,7 +796,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
                 const SizedBox(height: 12),
                 SizedBox(
                   width: double.infinity,
-                  child: ElevatedButton(onPressed: () {}, style: ElevatedButton.styleFrom(backgroundColor: AppColors.buttonBg, foregroundColor: AppColors.buttonText), child: const Text('Сменить пароль')),
+                  child: ElevatedButton(onPressed: _changePassword, style: ElevatedButton.styleFrom(backgroundColor: AppColors.buttonBg, foregroundColor: AppColors.buttonText), child: const Text('Сменить пароль')),
                 )
               ],
             )
@@ -659,7 +807,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
                   Text('Пароль', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
                   Text('Изменить пароль от аккаунта', style: TextStyle(color: AppColors.textSub, fontSize: 12)),
                 ]),
-                ElevatedButton(onPressed: () {}, style: ElevatedButton.styleFrom(backgroundColor: AppColors.buttonBg, foregroundColor: AppColors.buttonText), child: const Text('Сменить пароль')),
+                ElevatedButton(onPressed: _changePassword, style: ElevatedButton.styleFrom(backgroundColor: AppColors.buttonBg, foregroundColor: AppColors.buttonText), child: const Text('Сменить пароль')),
               ],
             ),
       ],
@@ -675,8 +823,16 @@ class _SettingsDialogState extends State<SettingsDialog> {
           Text('Приватность', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: AppColors.text)),
           const SizedBox(height: 30),
         ],
-        _dropdownRow('Стена', 'Кто может писать на вашей стене', 'Все'),
-        _dropdownRow('Лайки', 'Кто может видеть ваши лайкнутые посты', 'Все'),
+        
+        _interactiveDropdownRow('Стена', 'Кто может писать на вашей стене', wallPrivacy, ['Все', 'Друзья', 'Только я'], (val) {
+          setState(() => wallPrivacy = val);
+          _updatePrivacySetting('wallPrivacy', val);
+        }),
+        _interactiveDropdownRow('Лайки', 'Кто может видеть ваши лайкнутые посты', likesPrivacy, ['Все', 'Друзья', 'Только я'], (val) {
+          setState(() => likesPrivacy = val);
+          _updatePrivacySetting('likesPrivacy', val);
+        }),
+        
         Divider(height: 40, color: AppColors.border),
         
         isMobile 
@@ -687,7 +843,10 @@ class _SettingsDialogState extends State<SettingsDialog> {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text('Онлайн-статус', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
-                    Switch(value: onlineStatus, activeThumbColor: Colors.blueAccent, onChanged: (v) => setState(() => onlineStatus = v)),
+                    Switch(value: onlineStatus, activeThumbColor: Colors.blueAccent, onChanged: (v) {
+                      setState(() => onlineStatus = v);
+                      _updatePrivacySetting('onlineStatus', v);
+                    }),
                   ],
                 ),
                 Text('Показывать время последнего визита', style: TextStyle(color: AppColors.textSub, fontSize: 12)),
@@ -700,7 +859,10 @@ class _SettingsDialogState extends State<SettingsDialog> {
                   Text('Онлайн-статус', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
                   Text('Показывать время последнего визита', style: TextStyle(color: AppColors.textSub, fontSize: 12)),
                 ]),
-                Switch(value: onlineStatus, activeThumbColor: Colors.blueAccent, onChanged: (v) => setState(() => onlineStatus = v)),
+                Switch(value: onlineStatus, activeThumbColor: Colors.blueAccent, onChanged: (v) {
+                  setState(() => onlineStatus = v);
+                  _updatePrivacySetting('onlineStatus', v);
+                }),
               ],
             ),
             
@@ -789,8 +951,30 @@ class _SettingsDialogState extends State<SettingsDialog> {
     );
   }
 
-  Widget _dropdownRow(String title, String sub, String val) {
+  Widget _interactiveDropdownRow(String title, String sub, String currentValue, List<String> options, Function(String) onChanged) {
     bool isMobile = MediaQuery.of(context).size.width < 700;
+
+    Widget dropdownWidget = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      decoration: BoxDecoration(color: AppColors.input, borderRadius: BorderRadius.circular(8)),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String>(
+          value: currentValue,
+          dropdownColor: AppColors.card,
+          icon: Icon(Icons.keyboard_arrow_down, size: 16, color: AppColors.textSub),
+          style: TextStyle(color: AppColors.text, fontSize: 14),
+          onChanged: (String? newValue) {
+            if (newValue != null) onChanged(newValue);
+          },
+          items: options.map<DropdownMenuItem<String>>((String value) {
+            return DropdownMenuItem<String>(
+              value: value,
+              child: Text(value),
+            );
+          }).toList(),
+        ),
+      ),
+    );
 
     if (isMobile) {
       return Padding(
@@ -801,12 +985,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
             Text(title, style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
             Text(sub, style: TextStyle(color: AppColors.textSub, fontSize: 12)),
             const SizedBox(height: 8),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-              decoration: BoxDecoration(color: AppColors.input, borderRadius: BorderRadius.circular(8)),
-              child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(val, style: TextStyle(color: AppColors.text)), Icon(Icons.keyboard_arrow_down, size: 16, color: AppColors.textSub)]),
-            ),
+            SizedBox(width: double.infinity, child: dropdownWidget),
           ],
         ),
       );
@@ -823,11 +1002,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
               Text(sub, style: TextStyle(color: AppColors.textSub, fontSize: 12)),
             ]),
           ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            decoration: BoxDecoration(color: AppColors.input, borderRadius: BorderRadius.circular(8)),
-            child: Row(children: [Text(val, style: TextStyle(color: AppColors.text)), const SizedBox(width: 8), Icon(Icons.keyboard_arrow_down, size: 16, color: AppColors.textSub)]),
-          ),
+          dropdownWidget,
         ],
       ),
     );
