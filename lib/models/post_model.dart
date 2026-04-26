@@ -4,7 +4,7 @@ enum PostMediaType { none, image, video, file }
 
 class Post {
   final String? id;
-  final String? userId; // <--- ДОБАВИЛИ: ID автора из Supabase Auth
+  final String? userId; 
   final String username;
   final String? userEmoji;
   final Color avatarColor;
@@ -22,7 +22,7 @@ class Post {
 
   Post({
     this.id,
-    this.userId, // <--- ДОБАВИЛИ В КОНСТРУКТОР
+    this.userId, 
     required this.username,
     this.userEmoji,
     required this.avatarColor,
@@ -39,32 +39,33 @@ class Post {
     List<String>? comments,
   }) : comments = comments ?? [];
 
-  // Конвертируем данные из Supabase (JSON) в объект Dart
-  factory Post.fromJson(Map<String, dynamic> json) {
-    // Безопасное получение списка лайков и комментов, если они приходят в запросе
+  // Добавили параметр myName, чтобы определять, лайкнул ли пост текущий пользователь
+  factory Post.fromJson(Map<String, dynamic> json, String myName) {
     final List likesList = json['likes'] ?? [];
     final List dbComments = json['comments'] ?? [];
 
     return Post(
-      id: json['id'] as String?,
-      userId: json['user_id'] as String?, // <--- ЧИТАЕМ ИЗ БАЗЫ
+      id: json['id']?.toString(), // toString() спасет, если в БД id это цифра, а не текст
+      userId: json['user_id'] as String?, 
       username: json['username'] as String? ?? 'Аноним',
-      userEmoji: json['user_emoji'] as String?,
+      userEmoji: json['user_emoji'] as String? ?? '👤',
       avatarColor: Color(json['avatar_color'] as int? ?? Colors.orange.value),
       createdAt: DateTime.parse(json['created_at']),
       text: json['text'] as String? ?? '',
       imagePath: json['image_path'] as String?,
       fileName: json['file_name'] as String?,
       mediaType: PostMediaType.values[json['media_type'] as int? ?? 0],
+      pollOptions: json['poll_options'] != null ? List<String>.from(json['poll_options']) : null, // Восстановили опросы
+      pollVotes: json['poll_votes'] != null ? List<int>.from(json['poll_votes']) : null, // Восстановили голоса
       likesCount: likesList.length,
+      isLiked: likesList.any((like) => like['username'] == myName), // Проверяем лайк
       comments: dbComments.map((c) => "${c['username']}||${c['text']}").toList(),
     );
   }
 
-  // Конвертируем объект Dart в формат JSON для отправки в Supabase
   Map<String, dynamic> toJson() {
     return {
-      'user_id': userId, // <--- ОТПРАВЛЯЕМ В БАЗУ
+      'user_id': userId, 
       'username': username,
       'user_emoji': userEmoji,
       'avatar_color': avatarColor.value,
@@ -72,6 +73,8 @@ class Post {
       'image_path': imagePath,
       'file_name': fileName,
       'media_type': mediaType.index,
+      'poll_options': pollOptions, // Отправляем опросы в БД
+      'poll_votes': pollVotes,     // Отправляем голоса в БД
     };
   }
 }

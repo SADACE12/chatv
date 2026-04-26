@@ -4,7 +4,6 @@ import 'package:file_picker/file_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart'; 
 import 'dart:io';
-import 'dart:convert';
 import 'dart:async'; 
 import 'package:flutter/foundation.dart' show kIsWeb; 
 import 'package:video_player/video_player.dart';
@@ -12,7 +11,6 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../models/post_model.dart';
 import '../auth/login_screen.dart';
-import '../../data/app_data.dart';
 import 'profile_screen.dart' hide MessagesScreen; 
 import 'messages_screen.dart'; 
 
@@ -28,6 +26,7 @@ class _MainLayoutState extends State<MainLayout> {
   
   User? get currentUser => supabase.auth.currentUser;
   String myName = "Вы"; 
+  String myEmoji = "👤"; 
 
   final TextEditingController _postController = TextEditingController();
   final TextEditingController _searchController = TextEditingController();
@@ -57,14 +56,10 @@ class _MainLayoutState extends State<MainLayout> {
 
   @override
   void dispose() {
-    if (_realtimeChannel != null) {
-      supabase.removeChannel(_realtimeChannel!);
-    }
+    if (_realtimeChannel != null) supabase.removeChannel(_realtimeChannel!);
     _postController.dispose();
     _searchController.dispose();
-    for (var controller in _pollControllers) {
-      controller.dispose();
-    }
+    for (var controller in _pollControllers) { controller.dispose(); }
     super.dispose();
   }
 
@@ -74,13 +69,6 @@ class _MainLayoutState extends State<MainLayout> {
         Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const LoginScreen()));
       });
       return;
-    }
-
-    final prefs = await SharedPreferences.getInstance();
-    if (mounted) {
-      setState(() {
-        myName = prefs.getString('userName') ?? currentUser!.email!.split('@')[0];
-      });
     }
     await _loadPosts(); 
     _setupRealtime();   
@@ -92,9 +80,7 @@ class _MainLayoutState extends State<MainLayout> {
         .onPostgresChanges(
             event: PostgresChangeEvent.all,
             schema: 'public',
-            callback: (payload) {
-              _loadPosts(); 
-            })
+            callback: (payload) { _loadPosts(); })
         .subscribe();
   }
 
@@ -103,10 +89,11 @@ class _MainLayoutState extends State<MainLayout> {
     
     final prefs = await SharedPreferences.getInstance();
     
-    // Всегда берем самое свежее имя перед загрузкой постов
+    // Подтягиваем свежие данные профиля
     if (mounted) {
       setState(() {
         myName = prefs.getString('userName') ?? currentUser!.email!.split('@')[0];
+        myEmoji = prefs.getString('userEmoji') ?? currentUser!.userMetadata?['userEmoji'] ?? "👤";
       });
     }
 
@@ -114,11 +101,7 @@ class _MainLayoutState extends State<MainLayout> {
       List<dynamic> data = [];
 
       if (_isFollowingFeed) {
-        final followData = await supabase
-            .from('followers')
-            .select('following_id')
-            .eq('follower_id', currentUser!.id);
-            
+        final followData = await supabase.from('followers').select('following_id').eq('follower_id', currentUser!.id);
         List<String> followedIds = (followData as List).map((row) => row['following_id'].toString()).toList();
         
         if (followedIds.isEmpty) {
@@ -141,28 +124,10 @@ class _MainLayoutState extends State<MainLayout> {
       if (mounted) {
         setState(() {
           posts = (data as List).map((map) {
-            final List likesList = map['likes'] ?? [];
-            final List commentsList = map['comments'] ?? [];
-
-            final post = Post(
-              id: map['id'],
-              userId: map['user_id'], 
-              username: map['username'] ?? 'Аноним',
-              avatarColor: Color(map['avatar_color'] ?? Colors.orange.value), 
-              createdAt: DateTime.parse(map['created_at']), 
-              text: map['text'] ?? '', 
-              imagePath: map['image_path'], 
-              fileName: map['file_name'],
-              mediaType: PostMediaType.values[map['media_type'] ?? 0],
-              likesCount: likesList.length,
-              isLiked: likesList.any((like) => like['username'] == myName), // Проверка актуальным именем
-              comments: commentsList.map((c) => "${c['username']}||${c['text']}").toList(),
-              pollOptions: map['poll_options'] != null ? List<String>.from(map['poll_options']) : null,
-              pollVotes: map['poll_votes'] != null ? List<int>.from(map['poll_votes']) : null,
-            );
-            
-            post.votedOptionIndex = prefs.getInt('voted_poll_${map['id']}');
-            
+            // МАГИЯ ЗДЕСЬ: Используем ваш новый fromJson!
+            final post = Post.fromJson(map as Map<String, dynamic>, myName);
+            // Восстанавливаем только локальные данные о голосовании
+            post.votedOptionIndex = prefs.getInt('voted_poll_${post.id}');
             return post;
           }).toList();
         });
@@ -175,13 +140,11 @@ class _MainLayoutState extends State<MainLayout> {
   void _toggleLike(Post post) async {
     final postId = post.id;
     if (postId == null) return;
-
     final bool wasLiked = post.isLiked;
 
     setState(() {
       post.isLiked = !wasLiked;
       post.likesCount += wasLiked ? -1 : 1;
-      
       int idx = posts.indexWhere((p) => p.id == postId);
       if (idx != -1 && posts[idx] != post) {
         posts[idx].isLiked = post.isLiked;
@@ -195,9 +158,7 @@ class _MainLayoutState extends State<MainLayout> {
       } else {
         await supabase.from('likes').insert({'post_id': postId, 'username': myName});
       }
-    } catch (e) {
-      print('Ошибка при обработке лайка: $e');
-    }
+    } catch (e) { print('Ошибка при обработке лайка: $e'); }
   }
 
   Future<void> _handleVote(Post post, int optionIndex) async {
@@ -211,7 +172,6 @@ class _MainLayoutState extends State<MainLayout> {
     setState(() {
       post.pollVotes![optionIndex]++;
       post.votedOptionIndex = optionIndex; 
-
       int idx = posts.indexWhere((p) => p.id == post.id);
       if (idx != -1 && posts[idx] != post) {
         posts[idx].pollVotes![optionIndex] = post.pollVotes![optionIndex];
@@ -223,14 +183,9 @@ class _MainLayoutState extends State<MainLayout> {
     await prefs.setInt('voted_poll_${post.id}', optionIndex);
 
     try {
-      await supabase.from('posts').update({
-        'poll_votes': post.pollVotes
-      }).eq('id', post.id!);
+      await supabase.from('posts').update({'poll_votes': post.pollVotes}).eq('id', post.id!);
     } catch (e) {
-      print('Ошибка при голосовании: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Ошибка отправки голоса: $e'), backgroundColor: Colors.red),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e'), backgroundColor: Colors.red));
     }
   }
 
@@ -240,24 +195,19 @@ class _MainLayoutState extends State<MainLayout> {
 
     try {
       await supabase.from('comments').insert({
-        'post_id': postId,
+        'post_id': int.parse(postId), // Если БД требует int, парсим String обратно
         'username': myName,
         'text': commentText,
       });
       
       setState(() {
         post.comments.add("$myName||$commentText");
-        
         int idx = posts.indexWhere((p) => p.id == postId);
         if (idx != -1 && posts[idx] != post) {
-          if (!posts[idx].comments.contains("$myName||$commentText")) {
-            posts[idx].comments.add("$myName||$commentText");
-          }
+          if (!posts[idx].comments.contains("$myName||$commentText")) posts[idx].comments.add("$myName||$commentText");
         }
       });
-    } catch (e) {
-      print('Ошибка при отправке комментария: $e');
-    }
+    } catch (e) { print('Ошибка при отправке комментария: $e'); }
   }
 
   void _deletePost(Post post) {
@@ -274,12 +224,9 @@ class _MainLayoutState extends State<MainLayout> {
             onPressed: () async {
               final postId = post.id;
               Navigator.pop(context);
-
               if (postId == null) return;
 
-              setState(() {
-                posts.removeWhere((p) => p.id == postId);
-              });
+              setState(() { posts.removeWhere((p) => p.id == postId); });
 
               try {
                 await supabase.from('posts').delete().eq('id', postId);
@@ -319,7 +266,6 @@ class _MainLayoutState extends State<MainLayout> {
                 final newText = editController.text.trim();
                 final postId = post.id;
                 Navigator.pop(dialogContext);
-
                 if (postId == null) return;
 
                 try {
@@ -382,9 +328,7 @@ class _MainLayoutState extends State<MainLayout> {
           },
         ),
       ),
-    ).then((_) {
-      setState(() {});
-    });
+    ).then((_) { setState(() {}); });
   }
 
   void _showPickerOptions() {
@@ -444,14 +388,10 @@ class _MainLayoutState extends State<MainLayout> {
           height: 300,
           child: EmojiPicker(
             onEmojiSelected: (category, emoji) {
-              setState(() {
-                _postController.text += emoji.emoji;
-              });
+              setState(() { _postController.text += emoji.emoji; });
             },
             config: const Config(
-              emojiViewConfig: EmojiViewConfig(
-                backgroundColor: Color(0xFF1E1E1E),
-              ),
+              emojiViewConfig: EmojiViewConfig(backgroundColor: Color(0xFF1E1E1E)),
               categoryViewConfig: CategoryViewConfig(
                 backgroundColor: Color(0xFF1E1E1E),
                 indicatorColor: Colors.blueAccent,
@@ -503,44 +443,32 @@ class _MainLayoutState extends State<MainLayout> {
         uploadedUrl = supabase.storage.from('post_media').getPublicUrl(fileName);
       }
 
-      final response = await supabase.from('posts').insert({
-        'user_id': currentUser!.id, 
-        'username': myName,
-        'avatar_color': Colors.orange.value, 
-        'text': text,
-        'media_type': _currentMediaType.index,
-        'image_path': uploadedUrl,
-        'file_name': _pickedFileName,
-        'poll_options': _isCreatingPoll ? currentPollOptions : null,
-        'poll_votes': _isCreatingPoll ? List.filled(currentPollOptions.length, 0) : null,
-      }).select();
+      // МАГИЯ ЗДЕСЬ: Используем ваш новый toJson!
+      final tempPost = Post(
+        userId: currentUser!.id,
+        username: myName,
+        userEmoji: myEmoji,
+        avatarColor: Colors.orange,
+        createdAt: DateTime.now(), // База данных перепишет на свое
+        text: text,
+        mediaType: _currentMediaType,
+        imagePath: uploadedUrl,
+        fileName: _pickedFileName,
+        pollOptions: _isCreatingPoll ? currentPollOptions : null,
+        pollVotes: _isCreatingPoll ? List.filled(currentPollOptions.length, 0) : null,
+      );
+
+      final response = await supabase.from('posts').insert(tempPost.toJson()).select();
 
       setState(() {
         if (!_isFollowingFeed) {
-          posts.insert(0, Post(
-            id: response[0]['id'],
-            userId: currentUser!.id, 
-            username: myName, 
-            avatarColor: Colors.orange, 
-            createdAt: DateTime.parse(response[0]['created_at']), 
-            text: text,
-            imagePath: uploadedUrl, 
-            fileName: _pickedFileName, 
-            mediaType: _currentMediaType,
-            pollOptions: _isCreatingPoll ? currentPollOptions : null,
-            pollVotes: _isCreatingPoll ? List.filled(currentPollOptions.length, 0) : null,
-            comments: [],
-            likesCount: 0,
-            isLiked: false,
-          ));
+          // И сразу же добавляем в ленту через fromJson
+          posts.insert(0, Post.fromJson(response[0], myName));
         }
       });
 
     } catch (e) {
-      print('Ошибка при публикации: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Ошибка отправки: $e'), backgroundColor: Colors.red),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка отправки: $e'), backgroundColor: Colors.red));
     }
 
     setState(() {
@@ -559,7 +487,7 @@ class _MainLayoutState extends State<MainLayout> {
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const CircleAvatar(backgroundColor: Colors.orange, radius: 18, child: Icon(Icons.person, color: Colors.white)),
+              CircleAvatar(backgroundColor: Colors.orange, radius: 18, child: Text(myEmoji, style: const TextStyle(fontSize: 18))), 
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
@@ -742,11 +670,7 @@ class _MainLayoutState extends State<MainLayout> {
       children: [
         TextField(
           controller: _searchController,
-          onChanged: (val) {
-            setState(() {
-              _searchQuery = val;
-            });
-          },
+          onChanged: (val) { setState(() { _searchQuery = val; }); },
           style: const TextStyle(color: Colors.white),
           decoration: InputDecoration(
             hintText: 'Поиск постов и авторов...',
@@ -757,35 +681,20 @@ class _MainLayoutState extends State<MainLayout> {
                   icon: const Icon(Icons.clear, color: Colors.grey),
                   onPressed: () {
                     _searchController.clear();
-                    setState(() {
-                      _searchQuery = '';
-                    });
+                    setState(() { _searchQuery = ''; });
                   },
                 )
               : null,
             filled: true,
             fillColor: const Color(0xFF1E1E1E),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(20),
-              borderSide: BorderSide.none,
-            ),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide.none),
           ),
         ),
         const SizedBox(height: 16),
         if (_searchQuery.isEmpty)
-          const Padding(
-            padding: EdgeInsets.only(top: 40),
-            child: Center(
-              child: Text('Введите текст для поиска', style: TextStyle(color: Colors.grey)),
-            ),
-          )
+          const Padding(padding: EdgeInsets.only(top: 40), child: Center(child: Text('Введите текст для поиска', style: TextStyle(color: Colors.grey))))
         else if (searchResults.isEmpty)
-          const Padding(
-            padding: EdgeInsets.only(top: 40),
-            child: Center(
-              child: Text('Ничего не найдено', style: TextStyle(color: Colors.grey)),
-            ),
-          )
+          const Padding(padding: EdgeInsets.only(top: 40), child: Center(child: Text('Ничего не найдено', style: TextStyle(color: Colors.grey))))
         else
           ...searchResults.map((post) {
             return Padding(
@@ -793,7 +702,7 @@ class _MainLayoutState extends State<MainLayout> {
               child: PostCard(
                 post: post,
                 currentUserId: currentUser?.id, 
-                onPostTap: () => _openPostDetails(post),
+                onPostTap: () => _openPostDetails(post), 
                 onLike: () => _toggleLike(post),
                 onDelete: () => _deletePost(post),
                 onEdit: () => _editPost(post),
@@ -817,10 +726,7 @@ class _MainLayoutState extends State<MainLayout> {
                             alignment: Alignment.topCenter,
                             child: SizedBox(
                               width: MediaQuery.of(context).size.width < 900 ? MediaQuery.of(context).size.width : 700,
-                              child: ProfileScreen(
-                                allPosts: posts, 
-                                targetUserId: post.userId, 
-                              ),
+                              child: ProfileScreen(allPosts: posts, targetUserId: post.userId),
                             ),
                           ),
                         ),
@@ -852,7 +758,7 @@ class _MainLayoutState extends State<MainLayout> {
           },
         ),
         const SizedBox(height: 16),
-        const ClanEmojisPanel(),
+        const ClanEmojisPanel(), 
         _buildCreatePostField(),
         const SizedBox(height: 16),
         if (posts.isEmpty)
@@ -872,7 +778,7 @@ class _MainLayoutState extends State<MainLayout> {
             child: PostCard(
               post: post,
               currentUserId: currentUser?.id,
-              onPostTap: () => _openPostDetails(post),
+              onPostTap: () => _openPostDetails(post), 
               onLike: () => _toggleLike(post),
               onDelete: () => _deletePost(post),
               onEdit: () => _editPost(post),
@@ -896,10 +802,7 @@ class _MainLayoutState extends State<MainLayout> {
                           alignment: Alignment.topCenter,
                           child: SizedBox(
                             width: MediaQuery.of(context).size.width < 900 ? MediaQuery.of(context).size.width : 700,
-                            child: ProfileScreen(
-                              allPosts: posts,
-                              targetUserId: post.userId, 
-                            ),
+                            child: ProfileScreen(allPosts: posts, targetUserId: post.userId),
                           ),
                         ),
                       ),
@@ -973,7 +876,7 @@ class PostCard extends StatelessWidget {
                   onTap: onProfileTap,
                   child: Row(
                     children: [
-                      CircleAvatar(backgroundColor: post.avatarColor, radius: 20),
+                      CircleAvatar(backgroundColor: post.avatarColor, radius: 20, child: Text(post.userEmoji ?? '👤', style: const TextStyle(fontSize: 22))),
                       const SizedBox(width: 12),
                       Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                         Text(post.username, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.white)),
@@ -1013,10 +916,7 @@ class PostCard extends StatelessWidget {
                 child: Column(
                   children: List.generate(post.pollOptions!.length, (index) {
                     final option = post.pollOptions![index];
-                    final votes = (post.pollVotes != null && post.pollVotes!.length > index) 
-                        ? post.pollVotes![index] 
-                        : 0;
-
+                    final votes = (post.pollVotes != null && post.pollVotes!.length > index) ? post.pollVotes![index] : 0;
                     int totalVotes = post.pollVotes?.fold<int>(0, (int sum, int item) => sum + item) ?? 0;
                     double percentage = totalVotes > 0 ? (votes / totalVotes) : 0.0;
                     int percentInt = (percentage * 100).round();
@@ -1025,9 +925,7 @@ class PostCard extends StatelessWidget {
                     bool isSelected = post.votedOptionIndex == index;
 
                     return GestureDetector(
-                      onTap: () {
-                        if (!hasVoted) onVote(index);
-                      },
+                      onTap: () { if (!hasVoted) onVote(index); },
                       child: Container(
                         margin: const EdgeInsets.only(bottom: 8),
                         height: 48, 
@@ -1040,7 +938,6 @@ class PostCard extends StatelessWidget {
                                 border: Border.all(color: isSelected ? Colors.blueAccent : Colors.transparent, width: 1.5),
                               ),
                             ),
-                            
                             if (hasVoted)
                               FractionallySizedBox(
                                 widthFactor: percentage,
@@ -1051,23 +948,13 @@ class PostCard extends StatelessWidget {
                                   ),
                                 ),
                               ),
-                              
                             Padding(
                               padding: const EdgeInsets.symmetric(horizontal: 16),
                               child: Row(
                                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
-                                  Expanded(
-                                    child: Align(
-                                      alignment: Alignment.centerLeft,
-                                      child: Text(option, style: const TextStyle(color: Colors.white, fontSize: 14))
-                                    )
-                                  ),
-                                  if (hasVoted)
-                                    Align(
-                                      alignment: Alignment.centerRight,
-                                      child: Text('$votes ($percentInt%)', style: const TextStyle(color: Colors.grey, fontSize: 13, fontWeight: FontWeight.bold))
-                                    ),
+                                  Expanded(child: Align(alignment: Alignment.centerLeft, child: Text(option, style: const TextStyle(color: Colors.white, fontSize: 14)))),
+                                  if (hasVoted) Align(alignment: Alignment.centerRight, child: Text('$votes ($percentInt%)', style: const TextStyle(color: Colors.grey, fontSize: 13, fontWeight: FontWeight.bold))),
                                 ],
                               ),
                             ),
@@ -1170,9 +1057,7 @@ class _PostVideoPlayerState extends State<PostVideoPlayer> {
       setState(() {});
       _startHideTimer();
     }); 
-    _controller.addListener(() {
-      if (mounted) setState(() {});
-    });
+    _controller.addListener(() { if (mounted) setState(() {}); });
   }
 
   void _startHideTimer() {
@@ -1305,9 +1190,7 @@ class _FullScreenVideoPageState extends State<FullScreenVideoPage> {
     });
   }
 
-  void _listener() {
-    if (mounted) setState(() {});
-  }
+  void _listener() { if (mounted) setState(() {}); }
 
   @override
   void dispose() {
@@ -1429,13 +1312,48 @@ class LeftSidebarContent extends StatelessWidget {
   }
 }
 
-class ClanEmojisPanel extends StatelessWidget {
+class ClanEmojisPanel extends StatefulWidget {
   const ClanEmojisPanel({super.key});
+
+  @override
+  State<ClanEmojisPanel> createState() => _ClanEmojisPanelState();
+}
+
+class _ClanEmojisPanelState extends State<ClanEmojisPanel> {
+  List<Map<String, dynamic>> activeClans = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadClans();
+  }
+
+  Future<void> _loadClans() async {
+    try {
+      final response = await Supabase.instance.client.from('profiles').select('emoji');
+      
+      Map<String, int> counts = {};
+      for (var row in response) {
+        String emoji = row['emoji'] ?? '👤';
+        counts[emoji] = (counts[emoji] ?? 0) + 1;
+      }
+
+      List<Map<String, dynamic>> sortedClans = counts.entries
+          .map((e) => {'emoji': e.key, 'count': e.value})
+          .toList();
+      
+      sortedClans.sort((a, b) => (b['count'] as int).compareTo(a['count'] as int));
+
+      if (mounted) setState(() => activeClans = sortedClans);
+    } catch (e) {
+      print('Ошибка при загрузке кланов: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    if (AppData.activeClans.isEmpty) return const SizedBox.shrink();
-    final List<Map<String, dynamic>> activeClans = AppData.activeClans.entries.map((e) => {'emoji': e.key, 'count': e.value}).toList();
-    activeClans.sort((a, b) => (b['count'] as int).compareTo(a['count'] as int));
+    if (activeClans.isEmpty) return const SizedBox.shrink();
+    
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: SizedBox(
@@ -1451,7 +1369,11 @@ class ClanEmojisPanel extends StatelessWidget {
                 children: [
                   Container(
                     width: 54, height: 54,
-                    decoration: BoxDecoration(color: const Color(0xFF1E1E1E), shape: BoxShape.circle, border: Border.all(color: Colors.white24, width: 1.5)),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1E1E1E), 
+                      shape: BoxShape.circle, 
+                      border: Border.all(color: Colors.white24, width: 1.5)
+                    ),
                     child: Center(child: Text(clan['emoji'], style: const TextStyle(fontSize: 26))),
                   ),
                   const SizedBox(height: 6),

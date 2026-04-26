@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../home/main_layout.dart';
-import '../../data/app_data.dart';
+import 'package:supabase_flutter/supabase_flutter.dart'; // Подключаем Supabase
+import '../home/main_layout.dart'; // Проверьте правильность пути до main_layout
 import '../../theme/app_colors.dart'; // Подключаем тему
 
 class ProfileSetupScreen extends StatefulWidget {
@@ -13,6 +13,7 @@ class ProfileSetupScreen extends StatefulWidget {
 
 class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
   int _currentStep = 1; 
+  bool _isLoading = false; // Переменная для статуса загрузки
   
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _usernameController = TextEditingController();
@@ -42,24 +43,57 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
     }
   }
 
-  void _finishSetup() async {
+  // ОБНОВЛЕНО: Интеграция с БД Supabase
+  Future<void> _finishSetup() async {
     if (_selectedEmoji != null) {
-      final prefs = await SharedPreferences.getInstance();
-      
-      // СОХРАНЯЕМ ВСЕ ДАННЫЕ В ПАМЯТЬ
-      await prefs.setBool('isLoggedIn', true);
-      await prefs.setString('userEmoji', _selectedEmoji!);
-      await prefs.setString('userName', _nameController.text.trim());
-      await prefs.setString('userHandle', _usernameController.text.trim());
+      setState(() => _isLoading = true);
 
-      // Обновляем локальную статистику кланов
-      AppData.activeClans[_selectedEmoji!] = (AppData.activeClans[_selectedEmoji!] ?? 0) + 1;
+      try {
+        final supabase = Supabase.instance.client;
+        final userId = supabase.auth.currentUser!.id;
+        final name = _nameController.text.trim();
+        final handle = _usernameController.text.trim();
 
-      if (mounted) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (context) => const MainLayout()),
+        // 1. Сохраняем локально в память телефона
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('isLoggedIn', true);
+        await prefs.setString('userEmoji', _selectedEmoji!);
+        await prefs.setString('userName', name);
+        await prefs.setString('userHandle', handle);
+
+        // 2. Сохраняем в метаданные аккаунта (в Supabase Auth)
+        await supabase.auth.updateUser(
+          UserAttributes(
+            data: {
+              'userName': name,
+              'userHandle': handle,
+              'userEmoji': _selectedEmoji!,
+            },
+          ),
         );
+
+        // 3. Сохраняем в публичную таблицу профилей (для счетчика кланов)
+        await supabase.from('profiles').upsert({
+          'id': userId,
+          'username': name,
+          'emoji': _selectedEmoji!,
+        });
+
+        // Если всё успешно, переходим в ленту
+        if (mounted) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (context) => const MainLayout()),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Ошибка сохранения: $e'), backgroundColor: Colors.red),
+          );
+        }
+      } finally {
+        if (mounted) setState(() => _isLoading = false);
       }
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -71,7 +105,7 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
   void _showEmojiPicker() {
     showModalBottomSheet(
       context: context,
-      backgroundColor: AppColors.card, // Адаптивный фон шторки
+      backgroundColor: AppColors.card,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -125,7 +159,7 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
           appBar: AppBar(
             backgroundColor: Colors.transparent,
             elevation: 0,
-            iconTheme: IconThemeData(color: AppColors.text), // Цвет стрелки "назад"
+            iconTheme: IconThemeData(color: AppColors.text), 
             actions: [
               IconButton(
                 icon: Icon(isDark ? Icons.light_mode : Icons.dark_mode, color: AppColors.text),
@@ -271,14 +305,16 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
         ),
         const SizedBox(height: 16),
         ElevatedButton(
-          onPressed: _finishSetup,
+          onPressed: _isLoading ? null : _finishSetup,
           style: ElevatedButton.styleFrom(
             backgroundColor: _selectedEmoji != null ? AppColors.buttonBg : AppColors.border,
             foregroundColor: AppColors.buttonText,
             padding: const EdgeInsets.symmetric(vertical: 16),
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
           ),
-          child: const Text('Завершить', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          child: _isLoading
+              ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+              : const Text('Завершить', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
         ),
       ],
     );

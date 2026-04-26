@@ -481,8 +481,20 @@ class _SettingsDialogState extends State<SettingsDialog> {
 
       final userId = supabase.auth.currentUser?.id;
       if (userId != null) {
-        await supabase.from('posts').update({'username': name}).eq('user_id', userId);
+        // Обновляем публичный профиль для панели кланов
+        await supabase.from('profiles').upsert({
+          'id': userId,
+          'username': name,
+          'emoji': widget.currentEmoji,
+        });
+
+        // Обновляем старые посты с новым именем и смайликом!
+        await supabase.from('posts').update({
+          'username': name,
+          'user_emoji': widget.currentEmoji 
+        }).eq('user_id', userId);
         
+        // Обновляем лайки и комменты
         if (oldName != null && oldName != name) {
           await supabase.from('likes').update({'username': name}).eq('username', oldName);
           await supabase.from('comments').update({'username': name}).eq('username', oldName);

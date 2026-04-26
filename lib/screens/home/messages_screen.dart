@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'; 
 import 'dart:io';
 import 'dart:async';
+import 'dart:math' as Math; // Для анимации печатающего собеседника
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -52,8 +53,12 @@ class _MessagesScreenState extends State<MessagesScreen> {
   bool _isUploading = false; 
   bool _isComposing = false; 
 
+  // --- ГОЛОСОВЫЕ СООБЩЕНИЯ ---
   final _audioRecorder = AudioRecorder();
   bool _isRecording = false;
+  String? _recordedAudioPath; 
+  Timer? _recordTimer;
+  int _recordDuration = 0; 
 
   Stream<List<Map<String, dynamic>>>? _messagesStream;
   Map<String, dynamic>? _replyingToMessage;
@@ -81,6 +86,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
     _msgController.dispose();
     _searchController.dispose();
     _typingTimer?.cancel();
+    _recordTimer?.cancel();
     _audioRecorder.dispose(); 
     _leaveChannel(); 
     super.dispose();
@@ -154,44 +160,27 @@ class _MessagesScreenState extends State<MessagesScreen> {
       }
 
       try {
-        final followData = await supabase
-            .from('followers')
-            .select('following_id')
-            .eq('follower_id', myId);
-            
-        for (var row in followData) {
-          relevantUserIds.add(row['following_id']);
-        }
+        final followData = await supabase.from('followers').select('following_id').eq('follower_id', myId);
+        for (var row in followData) { relevantUserIds.add(row['following_id']); }
       } catch (e) {}
 
       if (relevantUserIds.isEmpty) {
-        if (mounted) {
-          setState(() {
-            chats = [];
-            _isLoadingChats = false;
-          });
-        }
+        if (mounted) setState(() { chats = []; _isLoadingChats = false; });
         return;
       }
 
-      final data = await supabase
-          .from('profiles')
-          .select()
-          .filter('id', 'in', relevantUserIds.toList()); 
+      final data = await supabase.from('profiles').select().filter('id', 'in', relevantUserIds.toList()); 
 
       if (mounted) {
         setState(() {
           chats = (data as List).map((user) => ChatItem(
-              id: user['id'], 
-              name: user['username'] ?? 'Пользователь', 
-              avatarColor: Colors.blueAccent, 
-              emoji: user['emoji'] ?? '👤', 
+              id: user['id'], name: user['username'] ?? 'Пользователь', 
+              avatarColor: Colors.blueAccent, emoji: user['emoji'] ?? '👤', 
           )).toList();
           _isLoadingChats = false; 
         });
       }
     } catch (e) {
-      print('Ошибка при загрузке списка чатов: $e');
       if (mounted) setState(() => _isLoadingChats = false);
     }
   }
@@ -233,7 +222,15 @@ class _MessagesScreenState extends State<MessagesScreen> {
           path = '${Directory.systemTemp.path}/audio_${DateTime.now().millisecondsSinceEpoch}.m4a';
         }
         await _audioRecorder.start(const RecordConfig(encoder: AudioEncoder.aacLc), path: path);
-        setState(() => _isRecording = true);
+        
+        setState(() {
+          _isRecording = true;
+          _recordDuration = 0;
+        });
+
+        _recordTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+          setState(() => _recordDuration++);
+        });
       } else {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Нет доступа к микрофону')));
       }
@@ -242,20 +239,39 @@ class _MessagesScreenState extends State<MessagesScreen> {
     }
   }
 
-  Future<void> _stopAndSendRecording() async {
+  Future<void> _stopRecording() async {
     try {
       final path = await _audioRecorder.stop();
-      setState(() => _isRecording = false);
-      if (path != null && path.isNotEmpty) {
-        await _uploadAndSendAudio(path);
-      }
+      _recordTimer?.cancel();
+      setState(() {
+        _isRecording = false;
+        if (path != null && path.isNotEmpty) {
+          _recordedAudioPath = path; 
+        }
+      });
     } catch (e) {
       print('Ошибка остановки записи: $e');
     }
   }
 
-  Future<void> _uploadAndSendAudio(String path) async {
-    setState(() => _isUploading = true); 
+  void _cancelRecording() {
+    _audioRecorder.stop();
+    _recordTimer?.cancel();
+    setState(() {
+      _isRecording = false;
+      _recordedAudioPath = null;
+      _recordDuration = 0;
+    });
+  }
+
+  Future<void> _sendRecordedAudio() async {
+    if (_recordedAudioPath == null) return;
+    final path = _recordedAudioPath!;
+    setState(() {
+      _isUploading = true;
+      _recordedAudioPath = null; 
+    }); 
+
     try {
       final bytes = await XFile(path).readAsBytes();
       final myId = currentUser?.id;
@@ -366,18 +382,101 @@ class _MessagesScreenState extends State<MessagesScreen> {
         mainAxisSize: MainAxisSize.min,
         children: [
           const SizedBox(height: 10),
+          Container(width: 40, height: 4, decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(2))),
+          const SizedBox(height: 10),
+          
           ListTile(leading: const Icon(Icons.reply, color: Colors.white), title: const Text('Ответить', style: TextStyle(color: Colors.white)), onTap: () { Navigator.pop(context); setState(() => _replyingToMessage = msg); }),
+          
           ListTile(
             leading: const Icon(Icons.copy, color: Colors.white), title: const Text('Копировать текст', style: TextStyle(color: Colors.white)),
             onTap: () { Clipboard.setData(ClipboardData(text: msg['text'] ?? '')); Navigator.pop(context); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Текст скопирован'))); },
           ),
-          if (isMe) ListTile(
-              leading: const Icon(Icons.delete, color: Colors.redAccent), title: const Text('Удалить у всех', style: TextStyle(color: Colors.white)),
+          
+          ListTile(
+            leading: Icon(msg['is_pinned'] == true ? Icons.push_pin : Icons.push_pin_outlined, color: Colors.orange), 
+            title: Text(msg['is_pinned'] == true ? 'Открепить' : 'Закрепить', style: const TextStyle(color: Colors.white)), 
+            onTap: () async { 
+              Navigator.pop(context); 
+              await supabase.from('messages').update({'is_pinned': !(msg['is_pinned'] == true)}).eq('id', msg['id']); 
+            }
+          ),
+
+          ListTile(
+            leading: const Icon(Icons.forward, color: Colors.blueAccent), title: const Text('Переслать', style: TextStyle(color: Colors.white)), 
+            onTap: () { Navigator.pop(context); _showForwardMenu(msg); }
+          ),
+
+          if (isMe && msg['text'] != '📷 Фотография' && msg['text'] != '📁 Файл' && msg['text'] != '🎤 Голосовое сообщение')
+            ListTile(
+              leading: const Icon(Icons.edit, color: Colors.white), title: const Text('Изменить', style: TextStyle(color: Colors.white)),
+              onTap: () { Navigator.pop(context); _editMessageDialog(msg); },
+            ),
+
+          if (isMe) 
+            ListTile(
+              leading: const Icon(Icons.delete, color: Colors.redAccent), title: const Text('Удалить у всех', style: TextStyle(color: Colors.redAccent)),
               onTap: () async { Navigator.pop(context); try { await supabase.from('messages').delete().eq('id', msg['id']); } catch (e) {} },
             ),
           const SizedBox(height: 20),
         ],
       ),
+    );
+  }
+
+  void _editMessageDialog(Map<String, dynamic> msg) {
+    TextEditingController editController = TextEditingController(text: msg['text']);
+    showDialog(
+      context: context, 
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text('Изменить сообщение', style: TextStyle(color: Colors.white)),
+        content: TextField(
+          controller: editController, style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(filled: true, fillColor: const Color(0xFF333333), border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none)),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Отмена', style: TextStyle(color: Colors.grey))),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent),
+            onPressed: () async {
+              Navigator.pop(ctx);
+              if (editController.text.trim().isNotEmpty && editController.text != msg['text']) {
+                await supabase.from('messages').update({'text': editController.text.trim(), 'is_edited': true}).eq('id', msg['id']);
+              }
+            }, 
+            child: const Text('Сохранить', style: TextStyle(color: Colors.white))
+          )
+        ],
+      )
+    );
+  }
+
+  void _showForwardMenu(Map<String, dynamic> msg) {
+    showModalBottomSheet(
+      context: context, backgroundColor: const Color(0xFF1E1E1E),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (context) => Column(
+        children: [
+          const Padding(padding: EdgeInsets.all(16), child: Text('Переслать в...', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold))),
+          Expanded(
+            child: ListView.builder(
+              itemCount: chats.length,
+              itemBuilder: (ctx, i) => ListTile(
+                leading: CircleAvatar(backgroundColor: chats[i].avatarColor.withOpacity(0.2), child: Text(chats[i].emoji)),
+                title: Text(chats[i].name, style: const TextStyle(color: Colors.white)),
+                onTap: () async {
+                  Navigator.pop(context);
+                  await supabase.from('messages').insert({
+                    'sender_id': currentUser!.id, 'receiver_id': chats[i].id, 'sender_email': myName,
+                    'text': 'Пересланное сообщение:\n${msg['text']}', 'is_read': false,
+                  });
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Переслано в ${chats[i].name}')));
+                }
+              )
+            )
+          )
+        ]
+      )
     );
   }
 
@@ -442,6 +541,36 @@ class _MessagesScreenState extends State<MessagesScreen> {
     );
   }
 
+  Widget _buildPinnedBanner(Map<String, dynamic> msg) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: const BoxDecoration(
+        color: Color(0xFF1A1A1A), 
+        border: Border(bottom: BorderSide(color: Colors.white10))
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.push_pin, color: Colors.orange, size: 20),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Закреплённое сообщение', style: TextStyle(color: Colors.orange, fontSize: 13, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 2),
+                Text(
+                  msg['text']?.replaceAll('\n', ' ') ?? 'Файл/Изображение', 
+                  maxLines: 1, overflow: TextOverflow.ellipsis, 
+                  style: const TextStyle(color: Colors.white70, fontSize: 14)
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildRoom() {
     final myId = currentUser?.id;
     final peerId = selectedChat?.id;
@@ -479,6 +608,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
               stream: _messagesStream,
               builder: (context, snapshot) {
                 if (!snapshot.hasData) return const Center(child: CircularProgressIndicator(color: Colors.blueAccent));
+                
                 final chatMessages = snapshot.data!.where((m) {
                   return (m['sender_id'] == myId && m['receiver_id'] == peerId) || (m['sender_id'] == peerId && m['receiver_id'] == myId);
                 }).toList();
@@ -486,15 +616,34 @@ class _MessagesScreenState extends State<MessagesScreen> {
                 final unreadMessages = chatMessages.where((m) => m['receiver_id'] == myId && m['is_read'] == false).toList();
                 if (unreadMessages.isNotEmpty) Future.microtask(() => _markAsRead());
 
-                return ListView.builder(
-                  reverse: true, padding: const EdgeInsets.all(16), itemCount: chatMessages.length,
-                  itemBuilder: (context, index) {
-                    final msg = chatMessages[index];
-                    return GestureDetector(
-                      onLongPress: () => _showMsgMenu(msg, msg['sender_id'] == myId),
-                      child: _dbBubble(msg, msg['sender_id'] == myId),
-                    );
-                  },
+                final pinnedMessages = chatMessages.where((m) => m['is_pinned'] == true).toList();
+                final latestPinned = pinnedMessages.isNotEmpty ? pinnedMessages.first : null;
+
+                return Column(
+                  children: [
+                    if (latestPinned != null) _buildPinnedBanner(latestPinned),
+                    Expanded(
+                      child: ListView.builder(
+                        reverse: true, padding: const EdgeInsets.all(16), 
+                        itemCount: chatMessages.length + (_isPeerTyping ? 1 : 0),
+                        itemBuilder: (context, index) {
+                          if (_isPeerTyping && index == 0) {
+                            return const Padding(
+                              padding: EdgeInsets.only(bottom: 8.0),
+                              child: Align(alignment: Alignment.centerLeft, child: TypingIndicator()),
+                            );
+                          }
+                          
+                          final msg = chatMessages[_isPeerTyping ? index - 1 : index];
+                          
+                          return GestureDetector(
+                            onTap: () => _showMsgMenu(msg, msg['sender_id'] == myId), 
+                            child: _dbBubble(msg, msg['sender_id'] == myId),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
                 );
               },
             ),
@@ -521,61 +670,97 @@ class _MessagesScreenState extends State<MessagesScreen> {
     );
   }
 
+  String _formatTimer(int seconds) {
+    final min = (seconds ~/ 60).toString().padLeft(2, '0');
+    final sec = (seconds % 60).toString().padLeft(2, '0');
+    return '$min:$sec';
+  }
+
   Widget _input() {
     return Container(
-      padding: const EdgeInsets.all(10),
-      color: const Color(0xFF121212),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+      decoration: const BoxDecoration(
+        color: Color(0xFF121212),
+        border: Border(top: BorderSide(color: Colors.white10)),
+      ),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
         children: [
-          _isUploading 
-            ? const Padding(padding: EdgeInsets.all(12.0), child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blueAccent)))
-            : IconButton(icon: const Icon(Icons.attach_file, color: Colors.grey), onPressed: () => _showAttachmentOptions()),
+          if (!_isRecording && _recordedAudioPath == null)
+            _isUploading 
+              ? const Padding(padding: EdgeInsets.all(12.0), child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blueAccent)))
+              : IconButton(icon: const Icon(Icons.attach_file, color: Colors.grey), onPressed: () => _showAttachmentOptions()),
           
           Expanded(
             child: _isRecording 
               ? Container(
-                  height: 48, alignment: Alignment.centerLeft, padding: const EdgeInsets.symmetric(horizontal: 20),
-                  decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(20)),
+                  height: 48, alignment: Alignment.centerLeft, padding: const EdgeInsets.symmetric(horizontal: 16),
+                  decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(24)),
                   child: Row(
-                    children: const [
-                      Icon(Icons.mic, color: Colors.redAccent, size: 18), SizedBox(width: 10),
-                      Text('Запись...', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
+                    children: [
+                      const RecordingMicIndicator(isRecording: true), 
+                      const SizedBox(width: 10),
+                      Text(_formatTimer(_recordDuration), style: const TextStyle(color: Colors.white, fontSize: 16)),
+                      const Spacer(),
+                      TextButton(onPressed: _cancelRecording, child: const Text('Отмена', style: TextStyle(color: Colors.grey))),
+                      IconButton(icon: const Icon(Icons.stop_circle, color: Colors.redAccent, size: 30), onPressed: _stopRecording, padding: EdgeInsets.zero, constraints: const BoxConstraints()),
                     ],
                   ),
                 )
-              : TextField(
-                  controller: _msgController,
-                  style: const TextStyle(color: Colors.white),
-                  textCapitalization: TextCapitalization.sentences,
-                  onChanged: (text) {
-                    _onTypingChanged(); 
-                    setState(() => _isComposing = text.isNotEmpty); 
-                  }, 
-                  decoration: InputDecoration(
-                    hintText: 'Сообщение...', hintStyle: const TextStyle(color: Colors.grey),
-                    filled: true, fillColor: const Color(0xFF1E1E1E),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide.none),
+              : _recordedAudioPath != null 
+                ? Container( 
+                    height: 48, padding: const EdgeInsets.only(right: 6),
+                    decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(24)),
+                    child: Row(
+                      children: [
+                        Expanded(child: AudioBubble(url: _recordedAudioPath!, isMe: true, isPreview: true)),
+                        IconButton(
+                          icon: const Icon(Icons.delete_outline, color: Colors.redAccent), 
+                          onPressed: _cancelRecording,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                        ),
+                        const SizedBox(width: 8),
+                      ],
+                    ),
+                  )
+                : TextField(
+                    controller: _msgController,
+                    style: const TextStyle(color: Colors.white),
+                    textCapitalization: TextCapitalization.sentences,
+                    maxLines: 4, minLines: 1, 
+                    onChanged: (text) {
+                      _onTypingChanged(); 
+                      setState(() => _isComposing = text.isNotEmpty); 
+                    }, 
+                    decoration: InputDecoration(
+                      hintText: 'Сообщение...', hintStyle: const TextStyle(color: Colors.grey),
+                      filled: true, fillColor: const Color(0xFF1E1E1E),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none),
+                    ),
+                    onSubmitted: (_) => _sendMessage(), 
                   ),
-                  onSubmitted: (_) => _sendMessage(), 
-                ),
           ),
           const SizedBox(width: 8),
           
-          _isComposing
-            ? Container(
-                decoration: const BoxDecoration(color: Colors.blueAccent, shape: BoxShape.circle),
-                child: IconButton(icon: const Icon(Icons.send, color: Colors.white, size: 20), onPressed: _sendMessage),
-              )
-            : GestureDetector(
-                onLongPressStart: (_) => _startRecording(),
-                onLongPressEnd: (_) => _stopAndSendRecording(),
-                child: Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(color: _isRecording ? Colors.redAccent : Colors.blueAccent, shape: BoxShape.circle),
-                  child: Icon(_isRecording ? Icons.mic : Icons.mic_none, color: Colors.white, size: 22),
+          Container(
+            height: 48,
+            width: 48,
+            decoration: BoxDecoration(
+              color: (_isComposing || _recordedAudioPath != null) ? Colors.blueAccent : Colors.transparent, 
+              shape: BoxShape.circle
+            ),
+            child: (_isComposing || _recordedAudioPath != null)
+              ? IconButton(
+                  icon: const Icon(Icons.send, color: Colors.white, size: 20), 
+                  onPressed: _recordedAudioPath != null ? _sendRecordedAudio : _sendMessage
+                )
+              : IconButton(
+                  icon: const Icon(Icons.mic_none, color: Colors.grey, size: 28),
+                  onPressed: _startRecording, 
                 ),
-              ),
+          ),
         ],
       ),
     );
@@ -591,30 +776,42 @@ class _MessagesScreenState extends State<MessagesScreen> {
     final fileName = msg['file_name'] as String?;
     final audioUrl = msg['audio_url'] as String?; 
     final bool isRead = msg['is_read'] == true;
+    final bool isPinned = msg['is_pinned'] == true;
+    final bool isEdited = msg['is_edited'] == true;
 
     return Align(
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
-        margin: const EdgeInsets.only(bottom: 12),
+        margin: const EdgeInsets.only(bottom: 8),
         constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
         decoration: BoxDecoration(
-          color: isMe ? Colors.blueAccent : const Color(0xFF333333),
-          borderRadius: BorderRadius.circular(16),
+          color: isMe ? Colors.blueAccent.shade700 : const Color(0xFF2A2A2A),
+          borderRadius: BorderRadius.only(
+            topLeft: const Radius.circular(16),
+            topRight: const Radius.circular(16),
+            bottomLeft: Radius.circular(isMe ? 16 : 4),
+            bottomRight: Radius.circular(isMe ? 4 : 16),
+          ),
+          border: isPinned ? Border.all(color: Colors.orange, width: 1.5) : null,
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (!isMe) Padding(padding: const EdgeInsets.only(bottom: 4), child: Text(msg['sender_email'] ?? 'Аноним', style: const TextStyle(color: Colors.orange, fontSize: 12, fontWeight: FontWeight.bold))),
+            if (!isMe) Padding(padding: const EdgeInsets.only(bottom: 4), child: Text(msg['sender_email'] ?? 'Аноним', style: TextStyle(color: Colors.blueAccent.shade100, fontSize: 13, fontWeight: FontWeight.bold))),
             if (isReply) ...[
-              Container(padding: const EdgeInsets.only(left: 8, top: 4, bottom: 4), margin: const EdgeInsets.only(bottom: 8), decoration: const BoxDecoration(border: Border(left: BorderSide(color: Colors.white54, width: 3))), child: Text(text.split('\n\n').first, style: const TextStyle(color: Colors.white70, fontSize: 13, fontStyle: FontStyle.italic))),
+              Container(
+                padding: const EdgeInsets.only(left: 8, top: 4, bottom: 4), margin: const EdgeInsets.only(bottom: 8), 
+                decoration: const BoxDecoration(border: Border(left: BorderSide(color: Colors.white54, width: 3))), 
+                child: Text(text.split('\n\n').first, style: const TextStyle(color: Colors.white70, fontSize: 13, fontStyle: FontStyle.italic))
+              ),
               Text(text.split('\n\n').length > 1 ? text.split('\n\n').sublist(1).join('\n\n') : '', style: const TextStyle(color: Colors.white, fontSize: 15, height: 1.3)),
             ] else ...[
               
               if (imageUrl != null && imageUrl.isNotEmpty) Padding(padding: const EdgeInsets.only(bottom: 8.0), child: ClipRRect(borderRadius: BorderRadius.circular(8), child: Image.network(imageUrl))),
               
               if (fileUrl != null && fileUrl.isNotEmpty) GestureDetector(
-                onTap: () { ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ссылка: $fileUrl\n(Для скачивания установите url_launcher)'), duration: const Duration(seconds: 4))); },
+                onTap: () { ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ссылка: $fileUrl'), duration: const Duration(seconds: 4))); },
                 child: Container(
                   padding: const EdgeInsets.all(10), margin: const EdgeInsets.only(bottom: 8),
                   decoration: BoxDecoration(color: Colors.black26, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.white12)),
@@ -626,13 +823,20 @@ class _MessagesScreenState extends State<MessagesScreen> {
                 AudioBubble(url: audioUrl, isMe: isMe),
               
               if (text.isNotEmpty && text != '📷 Фотография' && text != '📁 Файл' && text != '🎤 Голосовое сообщение')
-                Text(text, style: const TextStyle(color: Colors.white)),
+                Text(text, style: const TextStyle(color: Colors.white, fontSize: 15, height: 1.2)),
             ],
             const SizedBox(height: 4),
-            Align(alignment: Alignment.bottomRight, child: Row(mainAxisSize: MainAxisSize.min, children: [
-              Text(timeStr, style: const TextStyle(color: Colors.white60, fontSize: 10)),
-              if (isMe) ...[const SizedBox(width: 4), Icon(isRead ? Icons.done_all : Icons.check, size: 14, color: isRead ? Colors.white : Colors.white60)]
-            ])),
+            Align(
+              alignment: Alignment.bottomRight, 
+              child: Row(
+                mainAxisSize: MainAxisSize.min, 
+                children: [
+                  if (isEdited) const Text('изм. ', style: TextStyle(color: Colors.white54, fontSize: 11, fontStyle: FontStyle.italic)),
+                  Text(timeStr, style: TextStyle(color: isMe ? Colors.white70 : Colors.white54, fontSize: 11)),
+                  if (isMe) ...[const SizedBox(width: 4), Icon(isRead ? Icons.done_all : Icons.check, size: 14, color: isRead ? Colors.white : Colors.white70)]
+                ]
+              )
+            ),
           ],
         ),
       ),
@@ -640,10 +844,83 @@ class _MessagesScreenState extends State<MessagesScreen> {
   }
 }
 
+class TypingIndicator extends StatefulWidget {
+  const TypingIndicator({super.key});
+  @override
+  State<TypingIndicator> createState() => _TypingIndicatorState();
+}
+class _TypingIndicatorState extends State<TypingIndicator> with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(vsync: this, duration: const Duration(milliseconds: 1200))..repeat();
+  }
+  @override
+  void dispose() { _controller.dispose(); super.dispose(); }
+  
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(color: const Color(0xFF2A2A2A), borderRadius: BorderRadius.circular(16)),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: List.generate(3, (index) {
+          return AnimatedBuilder(
+            animation: _controller,
+            builder: (context, child) {
+              final double val = Math.sin((_controller.value * 2 * 3.14159) - (index * 1.0));
+              return Container(
+                margin: const EdgeInsets.symmetric(horizontal: 3),
+                width: 6, height: 6 + (val > 0 ? val * 4 : 0),
+                decoration: const BoxDecoration(color: Colors.white70, shape: BoxShape.circle),
+              );
+            },
+          );
+        }),
+      ),
+    );
+  }
+}
+
+class RecordingMicIndicator extends StatefulWidget {
+  final bool isRecording;
+  const RecordingMicIndicator({super.key, required this.isRecording});
+  @override
+  State<RecordingMicIndicator> createState() => _RecordingMicIndicatorState();
+}
+class _RecordingMicIndicatorState extends State<RecordingMicIndicator> with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(vsync: this, duration: const Duration(milliseconds: 800), lowerBound: 0.8, upperBound: 1.2);
+    if (widget.isRecording) _controller.repeat(reverse: true);
+  }
+  @override
+  void didUpdateWidget(RecordingMicIndicator oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isRecording && !oldWidget.isRecording) _controller.repeat(reverse: true);
+    else if (!widget.isRecording && oldWidget.isRecording) { _controller.stop(); _controller.value = 1.0; }
+  }
+  @override
+  void dispose() { _controller.dispose(); super.dispose(); }
+  
+  @override
+  Widget build(BuildContext context) {
+    return ScaleTransition(
+      scale: _controller,
+      child: const Icon(Icons.mic, color: Colors.redAccent, size: 24),
+    );
+  }
+}
+
 class AudioBubble extends StatefulWidget {
   final String url;
   final bool isMe;
-  const AudioBubble({super.key, required this.url, required this.isMe});
+  final bool isPreview; 
+  const AudioBubble({super.key, required this.url, required this.isMe, this.isPreview = false});
 
   @override
   State<AudioBubble> createState() => _AudioBubbleState();
@@ -685,9 +962,9 @@ class _AudioBubbleState extends State<AudioBubble> {
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.only(top: 4, bottom: 4, right: 8),
-      margin: const EdgeInsets.only(bottom: 8),
+      margin: widget.isPreview ? EdgeInsets.zero : const EdgeInsets.only(bottom: 4),
       decoration: BoxDecoration(
-        color: Colors.black26,
+        color: widget.isPreview ? Colors.transparent : (widget.isMe ? Colors.blueAccent.shade700 : const Color(0xFF333333)),
         borderRadius: BorderRadius.circular(12),
       ),
       child: Row(
@@ -695,16 +972,22 @@ class _AudioBubbleState extends State<AudioBubble> {
         children: [
           IconButton(
             icon: Icon(_isPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill, color: Colors.white, size: 36),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
             onPressed: () async {
               if (_isPlaying) {
                 await _audioPlayer.pause();
               } else {
-                await _audioPlayer.play(UrlSource(widget.url));
+                if (widget.url.startsWith('http')) {
+                  await _audioPlayer.play(UrlSource(widget.url));
+                } else {
+                  await _audioPlayer.play(DeviceFileSource(widget.url));
+                }
               }
             }
           ),
-          SizedBox(
-            width: 120, 
+          const SizedBox(width: 8),
+          Expanded(
             child: SliderTheme(
               data: SliderThemeData(
                 trackHeight: 2,
