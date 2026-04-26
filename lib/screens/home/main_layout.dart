@@ -11,6 +11,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../models/post_model.dart';
 import '../auth/login_screen.dart';
+import '../admin/admin_panel_screen.dart'; // Импорт админки
 import 'profile_screen.dart' hide MessagesScreen; 
 import 'messages_screen.dart'; 
 
@@ -27,6 +28,7 @@ class _MainLayoutState extends State<MainLayout> {
   User? get currentUser => supabase.auth.currentUser;
   String myName = "Вы"; 
   String myEmoji = "👤"; 
+  bool _isAdmin = false; // Переменная для проверки прав
 
   final TextEditingController _postController = TextEditingController();
   final TextEditingController _searchController = TextEditingController();
@@ -70,6 +72,19 @@ class _MainLayoutState extends State<MainLayout> {
       });
       return;
     }
+
+    // Проверка роли админа
+    try {
+      final res = await supabase.from('profiles').select('role').eq('id', currentUser!.id).single();
+      if (mounted) {
+        setState(() {
+          _isAdmin = res['role'] == 'admin';
+        });
+      }
+    } catch (e) {
+      print('Ошибка проверки роли: $e');
+    }
+
     await _loadPosts(); 
     _setupRealtime();   
   }
@@ -124,9 +139,7 @@ class _MainLayoutState extends State<MainLayout> {
       if (mounted) {
         setState(() {
           posts = (data as List).map((map) {
-            // МАГИЯ ЗДЕСЬ: Используем ваш новый fromJson!
             final post = Post.fromJson(map as Map<String, dynamic>, myName);
-            // Восстанавливаем только локальные данные о голосовании
             post.votedOptionIndex = prefs.getInt('voted_poll_${post.id}');
             return post;
           }).toList();
@@ -195,7 +208,7 @@ class _MainLayoutState extends State<MainLayout> {
 
     try {
       await supabase.from('comments').insert({
-        'post_id': int.parse(postId), // Если БД требует int, парсим String обратно
+        'post_id': int.parse(postId), 
         'username': myName,
         'text': commentText,
       });
@@ -443,13 +456,12 @@ class _MainLayoutState extends State<MainLayout> {
         uploadedUrl = supabase.storage.from('post_media').getPublicUrl(fileName);
       }
 
-      // МАГИЯ ЗДЕСЬ: Используем ваш новый toJson!
       final tempPost = Post(
         userId: currentUser!.id,
         username: myName,
         userEmoji: myEmoji,
         avatarColor: Colors.orange,
-        createdAt: DateTime.now(), // База данных перепишет на свое
+        createdAt: DateTime.now(),
         text: text,
         mediaType: _currentMediaType,
         imagePath: uploadedUrl,
@@ -462,7 +474,6 @@ class _MainLayoutState extends State<MainLayout> {
 
       setState(() {
         if (!_isFollowingFeed) {
-          // И сразу же добавляем в ленту через fromJson
           posts.insert(0, Post.fromJson(response[0], myName));
         }
       });
@@ -587,13 +598,24 @@ class _MainLayoutState extends State<MainLayout> {
 
     return Scaffold(
       backgroundColor: const Color(0xFF000000), 
-      appBar: isMobile ? AppBar(
-        title: const Text('ChatV', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blueAccent)),
-        backgroundColor: const Color(0xFF121212),
-        elevation: 0,
-        centerTitle: true,
-        automaticallyImplyLeading: false, 
-      ) : null,
+     appBar: isMobile ? AppBar(
+  title: const Text('ChatV', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blueAccent)),
+  backgroundColor: const Color(0xFF121212),
+  elevation: 0,
+  centerTitle: true,
+  automaticallyImplyLeading: false,
+  actions: [
+    if (_isAdmin)
+      IconButton(
+        icon: const Icon(Icons.admin_panel_settings_outlined, color: Colors.redAccent),
+        tooltip: 'Админка',
+        onPressed: () {
+          Navigator.push(context, MaterialPageRoute(builder: (context) => const AdminPanelScreen()));
+        },
+      ),
+    const SizedBox(width: 8),
+  ],
+) : null,
       
       body: Row(
         children: [
@@ -602,6 +624,7 @@ class _MainLayoutState extends State<MainLayout> {
               flex: 2, 
               child: LeftSidebarContent(
                 activeIdx: _currentIndex, 
+                isAdmin: _isAdmin, // Прокидываем статус админа
                 onSelect: (idx) => setState(() => _currentIndex = idx)
               )
             ),
@@ -1268,8 +1291,9 @@ class _FullScreenVideoPageState extends State<FullScreenVideoPage> {
 
 class LeftSidebarContent extends StatelessWidget {
   final int activeIdx;
+  final bool isAdmin; // Новый параметр
   final Function(int) onSelect;
-  const LeftSidebarContent({super.key, required this.activeIdx, required this.onSelect});
+  const LeftSidebarContent({super.key, required this.activeIdx, required this.isAdmin, required this.onSelect});
 
   @override
   Widget build(BuildContext context) {
@@ -1286,6 +1310,16 @@ class LeftSidebarContent extends StatelessWidget {
           _item(Icons.feed, 'Лента', activeIdx == 1, () => onSelect(1)),
           _item(Icons.search, 'Поиск', activeIdx == 3, () => onSelect(3)),
           _item(Icons.chat_bubble_outline, 'Сообщения', activeIdx == 2, () => onSelect(2)),
+          
+          // ПОКАЗЫВАЕМ АДМИНКУ ТОЛЬКО ЕСЛИ isAdmin == true
+          if (isAdmin)
+            Padding(
+              padding: const EdgeInsets.only(top: 8.0),
+              child: _item(Icons.admin_panel_settings_outlined, 'Админка', activeIdx == 99, () {
+                Navigator.push(context, MaterialPageRoute(builder: (context) => const AdminPanelScreen()));
+              }),
+            ),
+            
           const Spacer(),
           ListTile(
             leading: const Icon(Icons.logout, color: Colors.redAccent),
