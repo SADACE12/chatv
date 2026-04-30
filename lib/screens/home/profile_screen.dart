@@ -186,6 +186,54 @@ class _ProfileScreenState extends State<ProfileScreen> {
     ).then((_) => _loadUserData()); 
   }
 
+  // ── ВЫХОД ИЗ АККАУНТА ───────────────────────────────────────────────────────
+  Future<void> _signOut() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.7),
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.card,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Text('Выйти из аккаунта?', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
+        content: Text('Вы уверены, что хотите выйти?', style: TextStyle(color: AppColors.textSub)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text('Отмена', style: TextStyle(color: AppColors.textSub, fontWeight: FontWeight.bold)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.redAccent,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              elevation: 0,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Выйти', style: TextStyle(fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.clear();
+        await supabase.auth.signOut();
+        if (mounted) {
+          Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Ошибка выхода: $e'), backgroundColor: Colors.red),
+          );
+        }
+      }
+    }
+  }
+  // ───────────────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
     List<Post> userSpecificPosts = widget.allPosts
@@ -246,19 +294,40 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         ],
                       ),
                     ),
+                    
+                    // КНОПКА РЕДАКТИРОВАТЬ И КНОПКА ВЫХОДА
                     if (isMyProfile)
                       Positioned(
                         bottom: 15, right: 20,
-                        child: ElevatedButton(
-                          onPressed: _showSettingsDialog, 
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: AppColors.buttonBg,
-                            foregroundColor: AppColors.buttonText,
-                            elevation: 0,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                          ),
-                          child: const Text('Редактировать', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                        child: Row(
+                          children: [
+                            ElevatedButton(
+                              onPressed: _showSettingsDialog, 
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: AppColors.buttonBg,
+                                foregroundColor: AppColors.buttonText,
+                                elevation: 0,
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                              ),
+                              child: const Text('Редактировать', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                            ),
+                            const SizedBox(width: 8), // Отступ между кнопками
+                            Container(
+                              height: 40,
+                              width: 40,
+                              decoration: BoxDecoration(
+                                color: AppColors.buttonBg, // Такой же фон как у кнопки Редактировать
+                                shape: BoxShape.circle,
+                              ),
+                              child: IconButton(
+                                padding: EdgeInsets.zero,
+                                icon: const Icon(Icons.logout, color: Colors.redAccent, size: 20),
+                                onPressed: _signOut,
+                                tooltip: 'Выйти из аккаунта',
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                   ],
@@ -650,60 +719,6 @@ class _SettingsDialogState extends State<SettingsDialog> {
     );
   }
 
-  // ── ВЫХОД ИЗ АККАУНТА ──────────────────────────────────────────────────────
-  Future<void> _signOut() async {
-    // Сначала закрываем диалог настроек
-    Navigator.pop(context);
-
-    // Показываем диалог подтверждения поверх основного экрана
-    final confirm = await showDialog<bool>(
-      context: context,
-      barrierColor: Colors.black.withValues(alpha: 0.7),
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.card,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Text('Выйти из аккаунта?', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
-        content: Text('Вы уверены, что хотите выйти?', style: TextStyle(color: AppColors.textSub)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: Text('Отмена', style: TextStyle(color: AppColors.textSub, fontWeight: FontWeight.bold)),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.redAccent,
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-              elevation: 0,
-            ),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Выйти', style: TextStyle(fontWeight: FontWeight.bold)),
-          ),
-        ],
-      ),
-    );
-
-    if (confirm == true) {
-      try {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.clear();
-        await supabase.auth.signOut();
-        // После signOut Supabase сам сбрасывает сессию.
-        // Навигация на экран входа — адаптируй под свой роутинг.
-        if (mounted) {
-          Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
-        }
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Ошибка выхода: $e'), backgroundColor: Colors.red),
-          );
-        }
-      }
-    }
-  }
-  // ───────────────────────────────────────────────────────────────────────────
-
   Future<void> _updatePrivacySetting(String key, dynamic value) async {
     try {
       await supabase.auth.updateUser(UserAttributes(data: {key: value}));
@@ -769,17 +784,6 @@ class _SettingsDialogState extends State<SettingsDialog> {
               _menuItem(Icons.security_outlined, "Безопасность", isMobile: false),
               _menuItem(Icons.lock_outline, "Приватность", isMobile: false),
               const Spacer(),
-              // Кнопка выхода на десктопе (в сайдбаре внизу)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                child: ListTile(
-                  onTap: _signOut,
-                  leading: const Icon(Icons.logout, color: Colors.redAccent, size: 22),
-                  title: const Text('Выйти', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 14)),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  tileColor: Colors.redAccent.withValues(alpha: 0.08),
-                ),
-              ),
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                 child: IconButton(
@@ -803,33 +807,16 @@ class _SettingsDialogState extends State<SettingsDialog> {
   Widget _buildMobileLayout() {
     return Column(
       children: [
-        // Шапка с заголовком, кнопкой выхода и крестиком
+        // Шапка с заголовком и крестиком
         Padding(
           padding: const EdgeInsets.fromLTRB(20, 20, 12, 0),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text('Настройки', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: AppColors.text)),
-              Row(
-                children: [
-                  // ── КНОПКА ВЫХОДА (мобильная шапка) ──
-                  TextButton.icon(
-                    onPressed: _signOut,
-                    style: TextButton.styleFrom(
-                      foregroundColor: Colors.redAccent,
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                      backgroundColor: Colors.redAccent.withValues(alpha: 0.1),
-                    ),
-                    icon: const Icon(Icons.logout, size: 18),
-                    label: const Text('Выйти', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                  ),
-                  const SizedBox(width: 8),
-                  IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    icon: Icon(Icons.close, color: AppColors.textSub),
-                  ),
-                ],
+              IconButton(
+                onPressed: () => Navigator.pop(context),
+                icon: Icon(Icons.close, color: AppColors.textSub),
               ),
             ],
           ),
@@ -965,26 +952,6 @@ class _SettingsDialogState extends State<SettingsDialog> {
                     onPressed: _changePassword,
                     style: ElevatedButton.styleFrom(backgroundColor: AppColors.buttonBg, foregroundColor: AppColors.buttonText),
                     child: const Text('Сменить пароль'),
-                  ),
-                ),
-                const SizedBox(height: 32),
-                // ── КНОПКА ВЫХОДА В БЕЗОПАСНОСТИ (мобильная) ──
-                Divider(color: AppColors.border),
-                const SizedBox(height: 20),
-                Text('СЕССИЯ', style: TextStyle(color: AppColors.textSub, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1)),
-                const SizedBox(height: 16),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: _signOut,
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.redAccent,
-                      side: const BorderSide(color: Colors.redAccent, width: 1.5),
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    ),
-                    icon: const Icon(Icons.logout, size: 20),
-                    label: const Text('Выйти из аккаунта', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
                   ),
                 ),
               ],
