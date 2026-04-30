@@ -40,6 +40,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
   ChatItem? selectedChat;
   final TextEditingController _msgController = TextEditingController();
   final TextEditingController _searchController = TextEditingController();
+  final ScrollController _scrollController = ScrollController(); // Контроллер скролла для комнаты
   String _searchQuery = "";
   final ImagePicker _picker = ImagePicker();
   
@@ -64,6 +65,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
   Map<String, dynamic>? _replyingToMessage;
 
   RealtimeChannel? _chatChannel;
+  RealtimeChannel? _notificationsChannel; // Глобальный канал для уведомлений о новых сообщениях
   bool _isPeerOnline = false;
   bool _isPeerTyping = false;
   Timer? _typingTimer;
@@ -73,6 +75,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
     super.initState();
     _loadMyName();
     _loadUsers(); 
+    _setupGlobalNotifications(); // Запускаем слушатель уведомлений
 
     if (widget.initialChat != null) {
       selectedChat = widget.initialChat;
@@ -85,12 +88,103 @@ class _MessagesScreenState extends State<MessagesScreen> {
   void dispose() {
     _msgController.dispose();
     _searchController.dispose();
+    _scrollController.dispose();
     _typingTimer?.cancel();
     _recordTimer?.cancel();
     _audioRecorder.dispose(); 
     _leaveChannel(); 
+    _notificationsChannel?.unsubscribe(); // Отписываемся от уведомлений
     super.dispose();
   }
+
+  // --- ЛОГИКА ГЛОБАЛЬНЫХ УВЕДОМЛЕНИЙ ---
+  void _setupGlobalNotifications() {
+    if (currentUser == null) return;
+    
+    _notificationsChannel = supabase
+        .channel('global_notifications')
+        .onPostgresChanges(
+            event: PostgresChangeEvent.insert,
+            schema: 'public',
+            table: 'messages',
+            callback: (payload) {
+              final newMsg = payload.newRecord;
+              // Если сообщение адресовано нам
+              if (newMsg['receiver_id'] == currentUser!.id) {
+                // И если мы СЕЙЧАС НЕ находимся в чате с этим человеком
+                if (selectedChat?.id != newMsg['sender_id']) {
+                  _showInAppNotification(newMsg);
+                  _loadUsers(); // Обновляем список чатов, вдруг это новый собеседник
+                }
+              }
+            })
+        .subscribe();
+  }
+
+  void _showInAppNotification(Map<String, dynamic> msg) {
+    if (!mounted) return;
+    final senderName = msg['sender_email'] ?? 'Пользователь';
+    String text = msg['text'] ?? 'Новое сообщение';
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        elevation: 6,
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.only(bottom: 20, left: 16, right: 16),
+        padding: const EdgeInsets.all(16),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        backgroundColor: const Color(0xFF2A2A2A),
+        content: Row(
+          children: [
+            const CircleAvatar(
+              backgroundColor: Colors.blueAccent, 
+              radius: 20, 
+              child: Icon(Icons.mark_chat_unread, color: Colors.white, size: 20)
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(senderName, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 15)),
+                  const SizedBox(height: 4),
+                  Text(text, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white70, fontSize: 14)),
+                ],
+              ),
+            ),
+          ],
+        ),
+        duration: const Duration(seconds: 4),
+        action: SnackBarAction(
+          label: 'Открыть',
+          textColor: Colors.blueAccent,
+          onPressed: () {
+            // Ищем этого пользователя в списке чатов
+            final chatItem = chats.firstWhere(
+              (c) => c.id == msg['sender_id'],
+              orElse: () => ChatItem(
+                id: msg['sender_id'],
+                name: senderName,
+                avatarColor: Colors.blueAccent,
+                emoji: '👤',
+              ),
+            );
+            
+            // Переходим в чат
+            setState(() {
+              selectedChat = chatItem;
+              _searchQuery = "";
+              _searchController.clear();
+              _messagesStream = supabase.from('messages').stream(primaryKey: ['id']).order('created_at', ascending: false);
+              _joinChannel();
+            });
+          },
+        ),
+      ),
+    );
+  }
+  // -------------------------------------
 
   void _joinChannel() {
     if (selectedChat == null || currentUser == null) return;
@@ -209,6 +303,10 @@ class _MessagesScreenState extends State<MessagesScreen> {
       await supabase.from('messages').insert({
         'sender_id': myId, 'receiver_id': peerId, 'sender_email': myName, 'text': finalText, 'is_read': false,
       });
+      // Плавный скролл вниз при отправке
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(0.0, duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+      }
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e'), backgroundColor: Colors.red));
     }
@@ -292,6 +390,10 @@ class _MessagesScreenState extends State<MessagesScreen> {
         'sender_id': myId, 'receiver_id': peerId, 'sender_email': myName,
         'text': '🎤 Голосовое сообщение', 'audio_url': audioUrl, 'is_read': false,
       });
+      
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(0.0, duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+      }
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка отправки аудио: $e'), backgroundColor: Colors.red));
     } finally {
@@ -624,6 +726,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
                     if (latestPinned != null) _buildPinnedBanner(latestPinned),
                     Expanded(
                       child: ListView.builder(
+                        controller: _scrollController, // Добавили контроллер для скролла
                         reverse: true, padding: const EdgeInsets.all(16), 
                         itemCount: chatMessages.length + (_isPeerTyping ? 1 : 0),
                         itemBuilder: (context, index) {
