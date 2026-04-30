@@ -68,7 +68,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
         userBio = metadata['userBio'] ?? prefs.getString('userBio') ?? "";
       });
     } else {
-      // Сначала попробуем загрузить из таблицы profiles
       try {
         final res = await supabase
             .from('profiles')
@@ -87,7 +86,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
         }
       } catch (_) {}
 
-      // Фоллбэк — берём из постов
       final userPosts = widget.allPosts.where((p) => p.userId == widget.targetUserId).toList();
       if (mounted) {
         setState(() {
@@ -514,6 +512,22 @@ class _SettingsDialogState extends State<SettingsDialog> {
       final name = _nameController.text.trim();
       final handle = _handleController.text.trim();
       final bio = _bioController.text.trim();
+
+      // Валидация — имя и username не могут быть пустыми
+      if (name.isEmpty) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Имя не может быть пустым'), backgroundColor: Colors.red),
+        );
+        setState(() => _isLoading = false);
+        return;
+      }
+      if (handle.isEmpty) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Username не может быть пустым'), backgroundColor: Colors.red),
+        );
+        setState(() => _isLoading = false);
+        return;
+      }
 
       final prefs = await SharedPreferences.getInstance();
       final oldName = prefs.getString('userName') ?? supabase.auth.currentUser?.email?.split('@')[0]; 
