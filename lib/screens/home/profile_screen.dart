@@ -44,6 +44,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
   int followersCount = 0;
   bool isFollowing = false;
 
+  // --- ПЕРЕМЕННЫЕ ДЛЯ РИСОВАНИЯ БАННЕРА ---
+  bool _isDrawingBanner = false;
+  List<List<Offset>> _bannerStrokes = [];
+  List<Offset> _currentStroke = [];
+
   bool get isMyProfile => widget.targetUserId == null || widget.targetUserId == currentUser?.id;
   String get targetId => widget.targetUserId ?? currentUser?.id ?? '';
 
@@ -67,11 +72,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
         userEmoji = metadata['userEmoji'] ?? prefs.getString('userEmoji') ?? "😘";
         userBio = metadata['userBio'] ?? prefs.getString('userBio') ?? "";
       });
+
+      // Загрузка локально сохраненного баннера
+      final bannerData = metadata['bannerData'] ?? prefs.getString('bannerData');
+      if (bannerData != null) {
+        _parseBannerData(bannerData);
+      }
     } else {
       try {
+        // Запрашиваем все поля, включая banner_data (Вам нужно добавить эту колонку в БД!)
         final res = await supabase
             .from('profiles')
-            .select('username, emoji')
+            .select('*')
             .eq('id', widget.targetUserId!)
             .maybeSingle();
 
@@ -82,6 +94,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
             userEmoji = res['emoji'] ?? "👤";
             userBio = "";
           });
+
+          // Пытаемся загрузить баннер, если колонка существует и не пустая
+          if (res.containsKey('banner_data') && res['banner_data'] != null) {
+            _parseBannerData(res['banner_data']);
+          }
           return;
         }
       } catch (_) {}
@@ -101,6 +118,53 @@ class _ProfileScreenState extends State<ProfileScreen> {
           userBio = "";
         });
       }
+    }
+  }
+
+  // Парсер JSON данных для линий баннера
+  void _parseBannerData(dynamic bannerData) {
+    try {
+      final decoded = bannerData is String ? jsonDecode(bannerData) : bannerData;
+      setState(() {
+        _bannerStrokes = (decoded as List).map<List<Offset>>((stroke) {
+          return (stroke as List).map<Offset>((point) {
+            return Offset((point['dx'] as num).toDouble(), (point['dy'] as num).toDouble());
+          }).toList();
+        }).toList();
+      });
+    } catch (e) {
+      print('Ошибка загрузки баннера: $e');
+    }
+  }
+
+  // Сохранение нарисованного баннера
+  Future<void> _saveBannerStrokes() async {
+    setState(() => _isDrawingBanner = false);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      
+      // Конвертируем List<List<Offset>> в JSON-совместимый формат
+      final strokesJson = _bannerStrokes.map((stroke) => 
+        stroke.map((p) => {'dx': p.dx, 'dy': p.dy}).toList()
+      ).toList();
+      
+      final jsonString = jsonEncode(strokesJson);
+      await prefs.setString('bannerData', jsonString);
+
+      if (currentUser != null) {
+        // Сохраняем в метаданные auth
+        await supabase.auth.updateUser(
+          UserAttributes(data: {'bannerData': jsonString})
+        );
+        // Пытаемся сохранить в таблицу profiles (если колонка banner_data добавлена)
+        try {
+          await supabase.from('profiles').update({'banner_data': jsonString}).eq('id', currentUser!.id);
+        } catch (dbError) {
+          print('Добавьте колонку banner_data (text) в таблицу profiles, чтобы баннер видели другие: $dbError');
+        }
+      }
+    } catch (e) {
+      print('Ошибка сохранения баннера: $e');
     }
   }
 
@@ -256,13 +320,87 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 child: Stack(
                   clipBehavior: Clip.none,
                   children: [
-                    Container(
-                      height: 180,
-                      decoration: BoxDecoration(
-                        color: AppColors.card,
-                        borderRadius: const BorderRadius.vertical(bottom: Radius.circular(20)),
+                    // --- ОБЛАСТЬ РИСОВАНИЯ БАННЕРА ---
+                    GestureDetector(
+                      onPanStart: _isDrawingBanner ? (details) {
+                        setState(() {
+                          _currentStroke = [details.localPosition];
+                          _bannerStrokes.add(_currentStroke);
+                        });
+                      } : null,
+                      onPanUpdate: _isDrawingBanner ? (details) {
+                        setState(() {
+                          _currentStroke.add(details.localPosition);
+                        });
+                      } : null,
+                      child: Container(
+                        height: 180,
+                        width: double.infinity,
+                        decoration: BoxDecoration(
+                          color: AppColors.card,
+                          borderRadius: const BorderRadius.vertical(bottom: Radius.circular(20)),
+                        ),
+                        clipBehavior: Clip.hardEdge,
+                        child: CustomPaint(
+                          painter: BannerPainter(
+                            strokes: _bannerStrokes,
+                            strokeColor: Colors.blueAccent, // Цвет рисунка
+                          ),
+                        ),
                       ),
                     ),
+
+                    // --- КНОПКИ УПРАВЛЕНИЯ БАННЕРОМ ---
+                    if (isMyProfile && !_isDrawingBanner)
+                      Positioned(
+                        top: 15, right: 15,
+                        child: IconButton(
+                          icon: const Icon(Icons.brush, color: Colors.grey),
+                          onPressed: () => setState(() => _isDrawingBanner = true),
+                          tooltip: 'Нарисовать свой баннер',
+                        ),
+                      ),
+                      
+                    if (isMyProfile && _isDrawingBanner)
+                      Positioned(
+                        top: 15, right: 15,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.6),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.undo, color: Colors.white, size: 20),
+                                tooltip: 'Шаг назад',
+                                onPressed: () {
+                                  setState(() {
+                                    if (_bannerStrokes.isNotEmpty) {
+                                      _bannerStrokes.removeLast();
+                                    }
+                                  });
+                                },
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.check, color: Colors.greenAccent, size: 20),
+                                tooltip: 'Сохранить',
+                                onPressed: _saveBannerStrokes,
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.close, color: Colors.redAccent, size: 20),
+                                tooltip: 'Отмена',
+                                onPressed: () {
+                                  setState(() => _isDrawingBanner = false);
+                                  _loadUserData(); // Сбрасываем несохраненные изменения
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+
                     Positioned(
                       bottom: 10,
                       left: 20,
@@ -312,12 +450,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               ),
                               child: const Text('Редактировать', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                             ),
-                            const SizedBox(width: 8), // Отступ между кнопками
+                            const SizedBox(width: 8), 
                             Container(
                               height: 40,
                               width: 40,
                               decoration: BoxDecoration(
-                                color: AppColors.buttonBg, // Такой же фон как у кнопки Редактировать
+                                color: AppColors.buttonBg, 
                                 shape: BoxShape.circle,
                               ),
                               child: IconButton(
@@ -516,6 +654,37 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 }
 
+// --- КЛАСС ОТРИСОВЩИКА ХОЛСТА ---
+class BannerPainter extends CustomPainter {
+  final List<List<Offset>> strokes;
+  final Color strokeColor;
+
+  BannerPainter({required this.strokes, required this.strokeColor});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = strokeColor
+      ..strokeWidth = 4.0
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..style = PaintingStyle.stroke;
+
+    for (final stroke in strokes) {
+      if (stroke.isEmpty) continue;
+      final path = Path()..moveTo(stroke.first.dx, stroke.first.dy);
+      for (int i = 1; i < stroke.length; i++) {
+        path.lineTo(stroke[i].dx, stroke[i].dy);
+      }
+      canvas.drawPath(path, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant BannerPainter oldDelegate) => true;
+}
+
+// Внизу оставляем класс SettingsDialog без изменений (он такой же, как в вашем исходнике)
 class SettingsDialog extends StatefulWidget {
   final String currentEmoji;
   final String currentName;
@@ -807,7 +976,6 @@ class _SettingsDialogState extends State<SettingsDialog> {
   Widget _buildMobileLayout() {
     return Column(
       children: [
-        // Шапка с заголовком и крестиком
         Padding(
           padding: const EdgeInsets.fromLTRB(20, 20, 12, 0),
           child: Row(
@@ -821,7 +989,6 @@ class _SettingsDialogState extends State<SettingsDialog> {
             ],
           ),
         ),
-        // Горизонтальное меню категорий
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           padding: const EdgeInsets.symmetric(horizontal: 16),
