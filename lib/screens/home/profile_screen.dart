@@ -7,6 +7,13 @@ import '../../models/post_model.dart';
 import 'main_layout.dart';
 import 'messages_screen.dart'; 
 
+// --- СТРУКТУРА ДЛЯ ЛИНИИ (Хранит точки и цвет) ---
+class BannerStroke {
+  List<Offset> points;
+  Color color;
+  BannerStroke({required this.points, required this.color});
+}
+
 class ProfileScreen extends StatefulWidget {
   final List<Post> allPosts; 
   final String? targetUserId;
@@ -46,8 +53,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   // --- ПЕРЕМЕННЫЕ ДЛЯ РИСОВАНИЯ БАННЕРА ---
   bool _isDrawingBanner = false;
-  List<List<Offset>> _bannerStrokes = [];
-  List<Offset> _currentStroke = [];
+  List<BannerStroke> _bannerStrokes = [];
+  Color _selectedColor = Colors.blueAccent;
+  
+  final List<Color> _brushColors = [
+    Colors.blueAccent, Colors.redAccent, Colors.greenAccent,
+    Colors.yellowAccent, Colors.purpleAccent, Colors.white, Colors.black,
+  ];
 
   bool get isMyProfile => widget.targetUserId == null || widget.targetUserId == currentUser?.id;
   String get targetId => widget.targetUserId ?? currentUser?.id ?? '';
@@ -73,14 +85,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
         userBio = metadata['userBio'] ?? prefs.getString('userBio') ?? "";
       });
 
-      // Загрузка локально сохраненного баннера
       final bannerData = metadata['bannerData'] ?? prefs.getString('bannerData');
       if (bannerData != null) {
         _parseBannerData(bannerData);
       }
     } else {
       try {
-        // Запрашиваем все поля, включая banner_data (Вам нужно добавить эту колонку в БД!)
         final res = await supabase
             .from('profiles')
             .select('*')
@@ -95,7 +105,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
             userBio = "";
           });
 
-          // Пытаемся загрузить баннер, если колонка существует и не пустая
           if (res.containsKey('banner_data') && res['banner_data'] != null) {
             _parseBannerData(res['banner_data']);
           }
@@ -121,15 +130,26 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
-  // Парсер JSON данных для линий баннера
   void _parseBannerData(dynamic bannerData) {
     try {
       final decoded = bannerData is String ? jsonDecode(bannerData) : bannerData;
       setState(() {
-        _bannerStrokes = (decoded as List).map<List<Offset>>((stroke) {
-          return (stroke as List).map<Offset>((point) {
-            return Offset((point['dx'] as num).toDouble(), (point['dy'] as num).toDouble());
-          }).toList();
+        _bannerStrokes = (decoded as List).map<BannerStroke>((item) {
+          // Поддержка старого формата (где была просто List<Offset> без цвета)
+          if (item is List) {
+            final points = item.map<Offset>((point) {
+              return Offset((point['dx'] as num).toDouble(), (point['dy'] as num).toDouble());
+            }).toList();
+            return BannerStroke(points: points, color: Colors.blueAccent);
+          } else {
+            // Новый формат
+            final map = item as Map;
+            final points = (map['points'] as List).map<Offset>((point) {
+              return Offset((point['dx'] as num).toDouble(), (point['dy'] as num).toDouble());
+            }).toList();
+            final colorVal = map['color'] as int? ?? Colors.blueAccent.value;
+            return BannerStroke(points: points, color: Color(colorVal));
+          }
         }).toList();
       });
     } catch (e) {
@@ -137,30 +157,27 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
-  // Сохранение нарисованного баннера
   Future<void> _saveBannerStrokes() async {
     setState(() => _isDrawingBanner = false);
     try {
       final prefs = await SharedPreferences.getInstance();
       
-      // Конвертируем List<List<Offset>> в JSON-совместимый формат
-      final strokesJson = _bannerStrokes.map((stroke) => 
-        stroke.map((p) => {'dx': p.dx, 'dy': p.dy}).toList()
-      ).toList();
+      final strokesJson = _bannerStrokes.map((stroke) => {
+        'color': stroke.color.value,
+        'points': stroke.points.map((p) => {'dx': p.dx, 'dy': p.dy}).toList()
+      }).toList();
       
       final jsonString = jsonEncode(strokesJson);
       await prefs.setString('bannerData', jsonString);
 
       if (currentUser != null) {
-        // Сохраняем в метаданные auth
         await supabase.auth.updateUser(
           UserAttributes(data: {'bannerData': jsonString})
         );
-        // Пытаемся сохранить в таблицу profiles (если колонка banner_data добавлена)
         try {
           await supabase.from('profiles').update({'banner_data': jsonString}).eq('id', currentUser!.id);
         } catch (dbError) {
-          print('Добавьте колонку banner_data (text) в таблицу profiles, чтобы баннер видели другие: $dbError');
+          print('Ошибка обновления banner_data в таблице: $dbError');
         }
       }
     } catch (e) {
@@ -250,7 +267,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     ).then((_) => _loadUserData()); 
   }
 
-  // ── ВЫХОД ИЗ АККАУНТА ───────────────────────────────────────────────────────
   Future<void> _signOut() async {
     final confirm = await showDialog<bool>(
       context: context,
@@ -296,7 +312,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
       }
     }
   }
-  // ───────────────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -313,6 +328,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
         return Container(
           color: AppColors.bg, 
           child: ListView(
+            // Отключаем скролл списка, чтобы рисование на мобилке не прерывалось
+            physics: _isDrawingBanner 
+                ? const NeverScrollableScrollPhysics() 
+                : const AlwaysScrollableScrollPhysics(),
             padding: EdgeInsets.zero,
             children: [
               SizedBox(
@@ -324,13 +343,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     GestureDetector(
                       onPanStart: _isDrawingBanner ? (details) {
                         setState(() {
-                          _currentStroke = [details.localPosition];
-                          _bannerStrokes.add(_currentStroke);
+                          _bannerStrokes.add(BannerStroke(
+                            points: [details.localPosition], 
+                            color: _selectedColor
+                          ));
                         });
                       } : null,
                       onPanUpdate: _isDrawingBanner ? (details) {
                         setState(() {
-                          _currentStroke.add(details.localPosition);
+                          _bannerStrokes.last.points.add(details.localPosition);
                         });
                       } : null,
                       child: Container(
@@ -344,7 +365,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         child: CustomPaint(
                           painter: BannerPainter(
                             strokes: _bannerStrokes,
-                            strokeColor: Colors.blueAccent, // Цвет рисунка
                           ),
                         ),
                       ),
@@ -361,7 +381,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         ),
                       ),
                       
-                    if (isMyProfile && _isDrawingBanner)
+                    if (isMyProfile && _isDrawingBanner) ...[
                       Positioned(
                         top: 15, right: 15,
                         child: Container(
@@ -393,13 +413,45 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                 tooltip: 'Отмена',
                                 onPressed: () {
                                   setState(() => _isDrawingBanner = false);
-                                  _loadUserData(); // Сбрасываем несохраненные изменения
+                                  _loadUserData(); 
                                 },
                               ),
                             ],
                           ),
                         ),
                       ),
+                      // Палитра цветов
+                      Positioned(
+                        top: 70, right: 15,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.6),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: _brushColors.map((color) {
+                              return GestureDetector(
+                                onTap: () => setState(() => _selectedColor = color),
+                                child: Container(
+                                  margin: const EdgeInsets.symmetric(horizontal: 4),
+                                  width: 24, height: 24,
+                                  decoration: BoxDecoration(
+                                    color: color,
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
+                                      color: _selectedColor == color ? Colors.white : Colors.transparent,
+                                      width: 2.5,
+                                    ),
+                                  ),
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                        ),
+                      ),
+                    ],
 
                     Positioned(
                       bottom: 10,
@@ -433,7 +485,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       ),
                     ),
                     
-                    // КНОПКА РЕДАКТИРОВАТЬ И КНОПКА ВЫХОДА
                     if (isMyProfile)
                       Positioned(
                         bottom: 15, right: 20,
@@ -654,27 +705,27 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 }
 
-// --- КЛАСС ОТРИСОВЩИКА ХОЛСТА ---
+// --- КЛАСС ОТРИСОВЩИКА ХОЛСТА С ПОДДЕРЖКОЙ ЦВЕТОВ ---
 class BannerPainter extends CustomPainter {
-  final List<List<Offset>> strokes;
-  final Color strokeColor;
+  final List<BannerStroke> strokes;
 
-  BannerPainter({required this.strokes, required this.strokeColor});
+  BannerPainter({required this.strokes});
 
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = strokeColor
-      ..strokeWidth = 4.0
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round
-      ..style = PaintingStyle.stroke;
-
     for (final stroke in strokes) {
-      if (stroke.isEmpty) continue;
-      final path = Path()..moveTo(stroke.first.dx, stroke.first.dy);
-      for (int i = 1; i < stroke.length; i++) {
-        path.lineTo(stroke[i].dx, stroke[i].dy);
+      if (stroke.points.isEmpty) continue;
+      
+      final paint = Paint()
+        ..color = stroke.color
+        ..strokeWidth = 4.0
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round
+        ..style = PaintingStyle.stroke;
+
+      final path = Path()..moveTo(stroke.points.first.dx, stroke.points.first.dy);
+      for (int i = 1; i < stroke.points.length; i++) {
+        path.lineTo(stroke.points[i].dx, stroke.points[i].dy);
       }
       canvas.drawPath(path, paint);
     }
@@ -684,7 +735,6 @@ class BannerPainter extends CustomPainter {
   bool shouldRepaint(covariant BannerPainter oldDelegate) => true;
 }
 
-// Внизу оставляем класс SettingsDialog без изменений (он такой же, как в вашем исходнике)
 class SettingsDialog extends StatefulWidget {
   final String currentEmoji;
   final String currentName;
