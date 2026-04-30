@@ -11,7 +11,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../models/post_model.dart';
 import '../auth/login_screen.dart';
-import '../admin/admin_panel_screen.dart'; // Импорт админки
+import '../admin/admin_panel_screen.dart';
 import 'profile_screen.dart' hide MessagesScreen; 
 import 'messages_screen.dart'; 
 
@@ -28,7 +28,7 @@ class _MainLayoutState extends State<MainLayout> {
   User? get currentUser => supabase.auth.currentUser;
   String myName = "Вы"; 
   String myEmoji = "👤"; 
-  bool _isAdmin = false; // Переменная для проверки прав
+  bool _isAdmin = false;
 
   final TextEditingController _postController = TextEditingController();
   final TextEditingController _searchController = TextEditingController();
@@ -73,7 +73,6 @@ class _MainLayoutState extends State<MainLayout> {
       return;
     }
 
-    // Проверка роли админа
     try {
       final res = await supabase.from('profiles').select('role').eq('id', currentUser!.id).single();
       if (mounted) {
@@ -104,7 +103,6 @@ class _MainLayoutState extends State<MainLayout> {
     
     final prefs = await SharedPreferences.getInstance();
     
-    // Подтягиваем свежие данные профиля
     if (mounted) {
       setState(() {
         myName = prefs.getString('userName') ?? currentUser!.email!.split('@')[0];
@@ -208,7 +206,7 @@ class _MainLayoutState extends State<MainLayout> {
 
     try {
       await supabase.from('comments').insert({
-        'post_id': int.parse(postId), 
+        'post_id': postId, // UUID передаём как строку
         'username': myName,
         'text': commentText,
       });
@@ -220,7 +218,14 @@ class _MainLayoutState extends State<MainLayout> {
           if (!posts[idx].comments.contains("$myName||$commentText")) posts[idx].comments.add("$myName||$commentText");
         }
       });
-    } catch (e) { print('Ошибка при отправке комментария: $e'); }
+    } catch (e) { 
+      print('Ошибка при отправке комментария: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ошибка комментария: $e'), backgroundColor: Colors.red)
+        );
+      }
+    }
   }
 
   void _deletePost(Post post) {
@@ -333,7 +338,15 @@ class _MainLayoutState extends State<MainLayout> {
                       title: Text(post.username, style: const TextStyle(color: Colors.white)),
                       iconTheme: const IconThemeData(color: Colors.white),
                     ),
-                    body: ProfileScreen(allPosts: posts, targetUserId: post.userId),
+                    body: ProfileScreen(
+                      allPosts: posts,
+                      targetUserId: post.userId,
+                      onLike: _toggleLike,
+                      onDelete: _deletePost,
+                      onEdit: _editPost,
+                      onPostTap: _openPostDetails,
+                      onVote: _handleVote,
+                    ),
                   ),
                 ),
               );
@@ -591,6 +604,19 @@ class _MainLayoutState extends State<MainLayout> {
     );
   }
 
+  /// Строит ProfileScreen с передачей всех коллбэков
+  Widget _buildProfileScreen({String? targetUserId}) {
+    return ProfileScreen(
+      allPosts: posts,
+      targetUserId: targetUserId,
+      onLike: _toggleLike,
+      onDelete: _deletePost,
+      onEdit: _editPost,
+      onPostTap: _openPostDetails,
+      onVote: _handleVote,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     double screenWidth = MediaQuery.of(context).size.width;
@@ -598,24 +624,24 @@ class _MainLayoutState extends State<MainLayout> {
 
     return Scaffold(
       backgroundColor: const Color(0xFF000000), 
-     appBar: isMobile ? AppBar(
-  title: const Text('ChatV', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blueAccent)),
-  backgroundColor: const Color(0xFF121212),
-  elevation: 0,
-  centerTitle: true,
-  automaticallyImplyLeading: false,
-  actions: [
-    if (_isAdmin)
-      IconButton(
-        icon: const Icon(Icons.admin_panel_settings_outlined, color: Colors.redAccent),
-        tooltip: 'Админка',
-        onPressed: () {
-          Navigator.push(context, MaterialPageRoute(builder: (context) => const AdminPanelScreen()));
-        },
-      ),
-    const SizedBox(width: 8),
-  ],
-) : null,
+      appBar: isMobile ? AppBar(
+        title: const Text('ChatV', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blueAccent)),
+        backgroundColor: const Color(0xFF121212),
+        elevation: 0,
+        centerTitle: true,
+        automaticallyImplyLeading: false,
+        actions: [
+          if (_isAdmin)
+            IconButton(
+              icon: const Icon(Icons.admin_panel_settings_outlined, color: Colors.redAccent),
+              tooltip: 'Админка',
+              onPressed: () {
+                Navigator.push(context, MaterialPageRoute(builder: (context) => const AdminPanelScreen()));
+              },
+            ),
+          const SizedBox(width: 8),
+        ],
+      ) : null,
       
       body: Row(
         children: [
@@ -624,7 +650,7 @@ class _MainLayoutState extends State<MainLayout> {
               flex: 2, 
               child: LeftSidebarContent(
                 activeIdx: _currentIndex, 
-                isAdmin: _isAdmin, // Прокидываем статус админа
+                isAdmin: _isAdmin,
                 onSelect: (idx) => setState(() => _currentIndex = idx)
               )
             ),
@@ -638,7 +664,7 @@ class _MainLayoutState extends State<MainLayout> {
                 child: SizedBox(
                   width: isMobile ? screenWidth : 700, 
                   child: _currentIndex == 0 
-                    ? ProfileScreen(allPosts: posts) 
+                    ? _buildProfileScreen()           // ← свой профиль с коллбэками
                     : (_currentIndex == 2 
                         ? const MessagesScreen() 
                         : (_currentIndex == 3 ? _buildSearchScreen() : _buildFeed())),
@@ -749,7 +775,7 @@ class _MainLayoutState extends State<MainLayout> {
                             alignment: Alignment.topCenter,
                             child: SizedBox(
                               width: MediaQuery.of(context).size.width < 900 ? MediaQuery.of(context).size.width : 700,
-                              child: ProfileScreen(allPosts: posts, targetUserId: post.userId),
+                              child: _buildProfileScreen(targetUserId: post.userId), // ← с коллбэками
                             ),
                           ),
                         ),
@@ -825,7 +851,7 @@ class _MainLayoutState extends State<MainLayout> {
                           alignment: Alignment.topCenter,
                           child: SizedBox(
                             width: MediaQuery.of(context).size.width < 900 ? MediaQuery.of(context).size.width : 700,
-                            child: ProfileScreen(allPosts: posts, targetUserId: post.userId),
+                            child: _buildProfileScreen(targetUserId: post.userId), // ← с коллбэками
                           ),
                         ),
                       ),
@@ -1291,7 +1317,7 @@ class _FullScreenVideoPageState extends State<FullScreenVideoPage> {
 
 class LeftSidebarContent extends StatelessWidget {
   final int activeIdx;
-  final bool isAdmin; // Новый параметр
+  final bool isAdmin;
   final Function(int) onSelect;
   const LeftSidebarContent({super.key, required this.activeIdx, required this.isAdmin, required this.onSelect});
 
@@ -1311,7 +1337,6 @@ class LeftSidebarContent extends StatelessWidget {
           _item(Icons.search, 'Поиск', activeIdx == 3, () => onSelect(3)),
           _item(Icons.chat_bubble_outline, 'Сообщения', activeIdx == 2, () => onSelect(2)),
           
-          // ПОКАЗЫВАЕМ АДМИНКУ ТОЛЬКО ЕСЛИ isAdmin == true
           if (isAdmin)
             Padding(
               padding: const EdgeInsets.only(top: 8.0),

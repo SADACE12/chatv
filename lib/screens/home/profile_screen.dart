@@ -9,9 +9,23 @@ import 'messages_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   final List<Post> allPosts; 
-  final String? targetUserId; 
+  final String? targetUserId;
+  final Function(Post)? onLike;
+  final Function(Post)? onDelete;
+  final Function(Post)? onEdit;
+  final Function(Post)? onPostTap;
+  final Function(Post, int)? onVote;
 
-  const ProfileScreen({super.key, required this.allPosts, this.targetUserId});
+  const ProfileScreen({
+    super.key,
+    required this.allPosts,
+    this.targetUserId,
+    this.onLike,
+    this.onDelete,
+    this.onEdit,
+    this.onPostTap,
+    this.onVote,
+  });
 
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
@@ -54,18 +68,41 @@ class _ProfileScreenState extends State<ProfileScreen> {
         userBio = metadata['userBio'] ?? prefs.getString('userBio') ?? "";
       });
     } else {
-      final userPosts = widget.allPosts.where((p) => p.userId == widget.targetUserId).toList();
-      setState(() {
-        if (userPosts.isNotEmpty) {
-          userName = userPosts.first.username;
-          userHandle = "@${userName.toLowerCase().replaceAll(' ', '_')}";
-        } else {
-          userName = "Пользователь";
-          userHandle = "@user";
+      // Сначала попробуем загрузить из таблицы profiles
+      try {
+        final res = await supabase
+            .from('profiles')
+            .select('username, emoji')
+            .eq('id', widget.targetUserId!)
+            .maybeSingle();
+
+        if (res != null && mounted) {
+          setState(() {
+            userName = res['username'] ?? "Пользователь";
+            userHandle = "@${userName.toLowerCase().replaceAll(' ', '_')}";
+            userEmoji = res['emoji'] ?? "👤";
+            userBio = "";
+          });
+          return;
         }
-        userEmoji = "👤"; 
-        userBio = ""; 
-      });
+      } catch (_) {}
+
+      // Фоллбэк — берём из постов
+      final userPosts = widget.allPosts.where((p) => p.userId == widget.targetUserId).toList();
+      if (mounted) {
+        setState(() {
+          if (userPosts.isNotEmpty) {
+            userName = userPosts.first.username;
+            userHandle = "@${userName.toLowerCase().replaceAll(' ', '_')}";
+            userEmoji = userPosts.first.userEmoji ?? "👤";
+          } else {
+            userName = "Пользователь";
+            userHandle = "@user";
+            userEmoji = "👤";
+          }
+          userBio = "";
+        });
+      }
     }
   }
 
@@ -153,7 +190,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   @override
   Widget build(BuildContext context) {
-    List<Post> userSpecificPosts = widget.allPosts.where((p) => p.userId != null && p.userId == targetId).toList();
+    List<Post> userSpecificPosts = widget.allPosts
+        .where((p) => p.userId != null && p.userId == targetId)
+        .toList();
     List<Post> likedPosts = widget.allPosts.where((p) => p.isLiked).toList();
     
     List<Post> displayList = (isMyProfile && _showLikes) ? likedPosts : userSpecificPosts;
@@ -367,21 +406,38 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
                   child: PostCard(
                     post: post,
-                    currentUserId: currentUser?.id, 
+                    currentUserId: currentUser?.id,
+                    onPostTap: widget.onPostTap != null
+                        ? () => widget.onPostTap!(post)
+                        : null,
                     onLike: () {
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Лайки лучше ставить в общей ленте')));
+                      if (widget.onLike != null) {
+                        widget.onLike!(post);
+                        setState(() {});
+                      }
                     },
                     onDelete: () {
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Удаление доступно в основной ленте')));
-                    }, 
-                    onEdit: () {
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Редактирование доступно в основной ленте')));
+                      if (widget.onDelete != null) {
+                        widget.onDelete!(post);
+                      }
                     },
-                    onComment: () {
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Перейдите в ленту, чтобы оставить комментарий')));
-                    }, 
-                    onVote: (int index) => setState(() { _savePosts(); }),
-                    onProfileTap: () {}, 
+                    onEdit: () {
+                      if (widget.onEdit != null) {
+                        widget.onEdit!(post);
+                      }
+                    },
+                    onComment: widget.onPostTap != null
+                        ? () => widget.onPostTap!(post)
+                        : () {},
+                    onVote: (int index) {
+                      if (widget.onVote != null) {
+                        widget.onVote!(post, index);
+                        setState(() {});
+                      } else {
+                        setState(() { _savePosts(); });
+                      }
+                    },
+                    onProfileTap: () {},
                   ),
                 )),
                 const SizedBox(height: 40),
@@ -481,20 +537,17 @@ class _SettingsDialogState extends State<SettingsDialog> {
 
       final userId = supabase.auth.currentUser?.id;
       if (userId != null) {
-        // Обновляем публичный профиль для панели кланов
         await supabase.from('profiles').upsert({
           'id': userId,
           'username': name,
           'emoji': widget.currentEmoji,
         });
 
-        // Обновляем старые посты с новым именем и смайликом!
         await supabase.from('posts').update({
           'username': name,
           'user_emoji': widget.currentEmoji 
         }).eq('user_id', userId);
         
-        // Обновляем лайки и комменты
         if (oldName != null && oldName != name) {
           await supabase.from('likes').update({'username': name}).eq('username', oldName);
           await supabase.from('comments').update({'username': name}).eq('username', oldName);
