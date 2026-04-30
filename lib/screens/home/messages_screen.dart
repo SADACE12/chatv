@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'; 
 import 'dart:io';
 import 'dart:async';
-import 'dart:math' as Math; // Для анимации печатающего собеседника
+import 'dart:math' as Math;
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -13,17 +13,26 @@ import 'package:audioplayers/audioplayers.dart';
 
 enum MessageType { text, image, video, file, audio }
 
+// --- 1. ОБНОВЛЕННАЯ МОДЕЛЬ CHATITEM ---
 class ChatItem {
   final String id; 
   final String name;
   final Color avatarColor;
   final String emoji;
+  String? lastMessage;
+  DateTime? lastMessageTime;
+  bool isLastMessageFromMe;
+  bool isLastMessageRead;
 
   ChatItem({
     required this.id,
     required this.name,
     required this.avatarColor,
     required this.emoji,
+    this.lastMessage,
+    this.lastMessageTime,
+    this.isLastMessageFromMe = false,
+    this.isLastMessageRead = false,
   });
 }
 
@@ -40,7 +49,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
   ChatItem? selectedChat;
   final TextEditingController _msgController = TextEditingController();
   final TextEditingController _searchController = TextEditingController();
-  final ScrollController _scrollController = ScrollController(); // Контроллер скролла для комнаты
+  final ScrollController _scrollController = ScrollController(); 
   String _searchQuery = "";
   final ImagePicker _picker = ImagePicker();
   
@@ -54,7 +63,6 @@ class _MessagesScreenState extends State<MessagesScreen> {
   bool _isUploading = false; 
   bool _isComposing = false; 
 
-  // --- ГОЛОСОВЫЕ СООБЩЕНИЯ ---
   final _audioRecorder = AudioRecorder();
   bool _isRecording = false;
   String? _recordedAudioPath; 
@@ -65,7 +73,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
   Map<String, dynamic>? _replyingToMessage;
 
   RealtimeChannel? _chatChannel;
-  RealtimeChannel? _notificationsChannel; // Глобальный канал для уведомлений о новых сообщениях
+  RealtimeChannel? _notificationsChannel; 
   bool _isPeerOnline = false;
   bool _isPeerTyping = false;
   Timer? _typingTimer;
@@ -75,7 +83,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
     super.initState();
     _loadMyName();
     _loadUsers(); 
-    _setupGlobalNotifications(); // Запускаем слушатель уведомлений
+    _setupGlobalNotifications(); 
 
     if (widget.initialChat != null) {
       selectedChat = widget.initialChat;
@@ -93,28 +101,42 @@ class _MessagesScreenState extends State<MessagesScreen> {
     _recordTimer?.cancel();
     _audioRecorder.dispose(); 
     _leaveChannel(); 
-    _notificationsChannel?.unsubscribe(); // Отписываемся от уведомлений
+    _notificationsChannel?.unsubscribe(); 
     super.dispose();
   }
 
-  // --- ЛОГИКА ГЛОБАЛЬНЫХ УВЕДОМЛЕНИЙ ---
+  // Вспомогательная функция для форматирования времени в списке чатов
+  String _formatChatTime(DateTime time) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final msgDate = DateTime(time.year, time.month, time.day);
+
+    if (msgDate == today) {
+      return '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
+    } else if (msgDate == today.subtract(const Duration(days: 1))) {
+      return 'Вчера';
+    } else {
+      return '${time.day.toString().padLeft(2, '0')}.${time.month.toString().padLeft(2, '0')}';
+    }
+  }
+
+  // --- 2. ОБНОВЛЕННЫЕ УВЕДОМЛЕНИЯ (Слушаем все изменения для галочек) ---
   void _setupGlobalNotifications() {
     if (currentUser == null) return;
     
     _notificationsChannel = supabase
         .channel('global_notifications')
         .onPostgresChanges(
-            event: PostgresChangeEvent.insert,
+            event: PostgresChangeEvent.all, // Изменено на all, чтобы ловить прочтения (updates)
             schema: 'public',
             table: 'messages',
             callback: (payload) {
-              final newMsg = payload.newRecord;
-              // Если сообщение адресовано нам
-              if (newMsg['receiver_id'] == currentUser!.id) {
-                // И если мы СЕЙЧАС НЕ находимся в чате с этим человеком
-                if (selectedChat?.id != newMsg['sender_id']) {
+              _loadUsers(); // Перезагружаем список чатов, чтобы обновить последнее сообщение/галочки
+              
+              if (payload.eventType == 'INSERT') {
+                final newMsg = payload.newRecord;
+                if (newMsg['receiver_id'] == currentUser!.id && selectedChat?.id != newMsg['sender_id']) {
                   _showInAppNotification(newMsg);
-                  _loadUsers(); // Обновляем список чатов, вдруг это новый собеседник
                 }
               }
             })
@@ -160,7 +182,6 @@ class _MessagesScreenState extends State<MessagesScreen> {
           label: 'Открыть',
           textColor: Colors.blueAccent,
           onPressed: () {
-            // Ищем этого пользователя в списке чатов
             final chatItem = chats.firstWhere(
               (c) => c.id == msg['sender_id'],
               orElse: () => ChatItem(
@@ -171,7 +192,6 @@ class _MessagesScreenState extends State<MessagesScreen> {
               ),
             );
             
-            // Переходим в чат
             setState(() {
               selectedChat = chatItem;
               _searchQuery = "";
@@ -184,7 +204,6 @@ class _MessagesScreenState extends State<MessagesScreen> {
       ),
     );
   }
-  // -------------------------------------
 
   void _joinChannel() {
     if (selectedChat == null || currentUser == null) return;
@@ -237,22 +256,33 @@ class _MessagesScreenState extends State<MessagesScreen> {
     if (mounted) setState(() => myName = prefs.getString('userName') ?? currentUser?.email?.split('@')[0] ?? "Вы");
   }
 
+  // --- 3. ОБНОВЛЕННАЯ ЛОГИКА ЗАГРУЗКИ ПОЛЬЗОВАТЕЛЕЙ И ПОСЛЕДНИХ СООБЩЕНИЙ ---
   Future<void> _loadUsers() async {
     if (currentUser == null) return;
     try {
       final myId = currentUser!.id;
-      final Set<String> relevantUserIds = {};
-
+      
+      // 1. Получаем все сообщения пользователя
       final msgData = await supabase
           .from('messages')
-          .select('sender_id, receiver_id')
-          .or('sender_id.eq.$myId,receiver_id.eq.$myId');
+          .select('*')
+          .or('sender_id.eq.$myId,receiver_id.eq.$myId')
+          .order('created_at', ascending: false);
 
+      Map<String, Map<String, dynamic>> latestMessages = {};
+      Set<String> relevantUserIds = {};
+
+      // 2. Группируем последние сообщения по собеседникам
       for (var row in msgData) {
-        if (row['sender_id'] != myId) relevantUserIds.add(row['sender_id']);
-        if (row['receiver_id'] != myId) relevantUserIds.add(row['receiver_id']);
+        final peerId = row['sender_id'] == myId ? row['receiver_id'] : row['sender_id'];
+        relevantUserIds.add(peerId);
+
+        if (!latestMessages.containsKey(peerId)) {
+          latestMessages[peerId] = row;
+        }
       }
 
+      // 3. Также добавляем подписки (даже если с ними еще нет переписки)
       try {
         final followData = await supabase.from('followers').select('following_id').eq('follower_id', myId);
         for (var row in followData) { relevantUserIds.add(row['following_id']); }
@@ -263,14 +293,47 @@ class _MessagesScreenState extends State<MessagesScreen> {
         return;
       }
 
+      // 4. Загружаем профили всех найденных людей
       final data = await supabase.from('profiles').select().filter('id', 'in', relevantUserIds.toList()); 
 
       if (mounted) {
         setState(() {
-          chats = (data as List).map((user) => ChatItem(
-              id: user['id'], name: user['username'] ?? 'Пользователь', 
-              avatarColor: Colors.blueAccent, emoji: user['emoji'] ?? '👤', 
-          )).toList();
+          chats = (data as List).map((user) {
+            final peerId = user['id'];
+            final latestMsg = latestMessages[peerId];
+            
+            String? text;
+            DateTime? time;
+            bool fromMe = false;
+            bool isRead = false;
+
+            if (latestMsg != null) {
+              text = latestMsg['text'];
+              time = DateTime.parse(latestMsg['created_at']).toLocal();
+              fromMe = latestMsg['sender_id'] == myId;
+              isRead = latestMsg['is_read'] == true;
+            }
+
+            return ChatItem(
+              id: peerId, 
+              name: user['username'] ?? 'Пользователь', 
+              avatarColor: Colors.blueAccent, 
+              emoji: user['emoji'] ?? '👤', 
+              lastMessage: text,
+              lastMessageTime: time,
+              isLastMessageFromMe: fromMe,
+              isLastMessageRead: isRead,
+            );
+          }).toList();
+          
+          // 5. Сортируем список чатов по времени последнего сообщения
+          chats.sort((a, b) {
+            if (a.lastMessageTime == null && b.lastMessageTime == null) return 0;
+            if (a.lastMessageTime == null) return 1;
+            if (b.lastMessageTime == null) return -1;
+            return b.lastMessageTime!.compareTo(a.lastMessageTime!);
+          });
+
           _isLoadingChats = false; 
         });
       }
@@ -303,7 +366,6 @@ class _MessagesScreenState extends State<MessagesScreen> {
       await supabase.from('messages').insert({
         'sender_id': myId, 'receiver_id': peerId, 'sender_email': myName, 'text': finalText, 'is_read': false,
       });
-      // Плавный скролл вниз при отправке
       if (_scrollController.hasClients) {
         _scrollController.animateTo(0.0, duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
       }
@@ -603,6 +665,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
     return Container(color: Colors.black, child: selectedChat == null ? _buildList() : _buildRoom());
   }
 
+  // --- 4. ОБНОВЛЕННЫЙ ИНТЕРФЕЙС СПИСКА ЧАТОВ ---
   Widget _buildList() {
     List<ChatItem> filtered = chats.where((chat) => chat.name.toLowerCase().contains(_searchQuery.toLowerCase())).toList();
     return Scaffold(
@@ -625,17 +688,80 @@ class _MessagesScreenState extends State<MessagesScreen> {
                   ? const Center(child: Text("Нет доступных чатов.\nПодпишитесь на кого-то!", textAlign: TextAlign.center, style: TextStyle(color: Colors.grey)))
                   : ListView.builder(
                       itemCount: filtered.length,
-                      itemBuilder: (c, i) => ListTile(
-                        leading: CircleAvatar(backgroundColor: filtered[i].avatarColor.withOpacity(0.2), child: Text(filtered[i].emoji, style: const TextStyle(fontSize: 18))),
-                        title: Text(filtered[i].name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                        onTap: () {
-                          setState(() {
-                            selectedChat = filtered[i]; _searchQuery = ""; _searchController.clear();
-                            _messagesStream = supabase.from('messages').stream(primaryKey: ['id']).order('created_at', ascending: false);
-                            _joinChannel(); 
-                          });
-                        },
-                      ),
+                      itemBuilder: (c, i) {
+                        final chat = filtered[i];
+                        return ListTile(
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                          leading: CircleAvatar(
+                            radius: 26,
+                            backgroundColor: chat.avatarColor.withOpacity(0.2), 
+                            child: Text(chat.emoji, style: const TextStyle(fontSize: 22))
+                          ),
+                          title: Text(chat.name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+                          
+                          // Подзаголовок: Галочки + Текст последнего сообщения
+                          subtitle: Padding(
+                            padding: const EdgeInsets.only(top: 4.0),
+                            child: chat.lastMessage != null
+                                ? Row(
+                                    children: [
+                                      if (chat.isLastMessageFromMe) ...[
+                                        Icon(
+                                          chat.isLastMessageRead ? Icons.done_all : Icons.check, 
+                                          size: 16, 
+                                          color: chat.isLastMessageRead ? Colors.blueAccent : Colors.grey
+                                        ),
+                                        const SizedBox(width: 4),
+                                      ],
+                                      Expanded(
+                                        child: Text(
+                                          chat.lastMessage!.replaceAll('\n', ' '), 
+                                          maxLines: 1, 
+                                          overflow: TextOverflow.ellipsis, 
+                                          style: TextStyle(
+                                            color: (!chat.isLastMessageFromMe && !chat.isLastMessageRead) ? Colors.white : Colors.grey, 
+                                            fontWeight: (!chat.isLastMessageFromMe && !chat.isLastMessageRead) ? FontWeight.bold : FontWeight.normal,
+                                            fontSize: 14
+                                          )
+                                        ),
+                                      ),
+                                    ],
+                                  )
+                                : const Text('Нет сообщений', style: TextStyle(color: Colors.white24, fontSize: 14)),
+                          ),
+                          
+                          // Время сообщения справа
+                          trailing: chat.lastMessageTime != null
+                              ? Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  crossAxisAlignment: CrossAxisAlignment.end,
+                                  children: [
+                                    Text(
+                                      _formatChatTime(chat.lastMessageTime!),
+                                      style: TextStyle(
+                                        color: (!chat.isLastMessageFromMe && !chat.isLastMessageRead) ? Colors.blueAccent : Colors.grey, 
+                                        fontSize: 12
+                                      ),
+                                    ),
+                                    if (!chat.isLastMessageFromMe && !chat.isLastMessageRead)
+                                      Container(
+                                        margin: const EdgeInsets.only(top: 6),
+                                        width: 8, height: 8,
+                                        decoration: const BoxDecoration(color: Colors.blueAccent, shape: BoxShape.circle),
+                                      )
+                                  ],
+                                )
+                              : null,
+                              
+                          onTap: () {
+                            setState(() {
+                              selectedChat = chat; _searchQuery = ""; _searchController.clear();
+                              _messagesStream = supabase.from('messages').stream(primaryKey: ['id']).order('created_at', ascending: false);
+                              _joinChannel(); 
+                            });
+                          },
+                        );
+                      },
                     ),
           ),
         ],
@@ -726,7 +852,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
                     if (latestPinned != null) _buildPinnedBanner(latestPinned),
                     Expanded(
                       child: ListView.builder(
-                        controller: _scrollController, // Добавили контроллер для скролла
+                        controller: _scrollController,
                         reverse: true, padding: const EdgeInsets.all(16), 
                         itemCount: chatMessages.length + (_isPeerTyping ? 1 : 0),
                         itemBuilder: (context, index) {
