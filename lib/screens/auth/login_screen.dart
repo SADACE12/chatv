@@ -15,9 +15,48 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   bool _obscurePassword = true;
   bool _isLoading = false; // Состояние загрузки
+  bool _isCheckingSession = true; // Состояние проверки сессии при старте
 
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _checkInitialSession();
+  }
+
+  // --- НОВАЯ ЛОГИКА: ПРОВЕРКА СЕССИИ ПРИ СТАРТЕ ---
+  Future<void> _checkInitialSession() async {
+    try {
+      final session = Supabase.instance.client.auth.currentSession;
+      
+      if (session != null) {
+        // Сессия есть, проверяем сохранен в ли кэш
+        final prefs = await SharedPreferences.getInstance();
+        final isLoggedIn = prefs.getBool('isLoggedIn') ?? false;
+
+        if (isLoggedIn && mounted) {
+           // Если все ок - сразу кидаем на главный экран
+           Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (context) => const MainLayout()),
+          );
+          return;
+        }
+      }
+    } catch (e) {
+      print("Ошибка при проверке сессии: $e");
+    } finally {
+      // Если сессии нет, показываем экран логина
+      if (mounted) {
+        setState(() {
+          _isCheckingSession = false;
+        });
+      }
+    }
+  }
+  // ------------------------------------------------
 
   @override
   void dispose() {
@@ -98,6 +137,18 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Если идет проверка сессии, показываем пустой экран или индикатор загрузки
+    if (_isCheckingSession) {
+      return Scaffold(
+        backgroundColor: AppColors.bg,
+        body: Center(
+          child: CircularProgressIndicator(
+            color: AppColors.text, // Используем цвет текста из твоей темы
+          ),
+        ),
+      );
+    }
+
     return ValueListenableBuilder<bool>(
       valueListenable: AppColors.isDarkNotifier,
       builder: (context, isDark, child) {

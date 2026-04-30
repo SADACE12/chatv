@@ -29,6 +29,7 @@ class _MainLayoutState extends State<MainLayout> {
   String myName = "Вы"; 
   String myEmoji = "👤"; 
   bool _isAdmin = false;
+  bool _isAppLoading = true; // <-- Добавлен флаг загрузки приложения
 
   final TextEditingController _postController = TextEditingController();
   final TextEditingController _searchController = TextEditingController();
@@ -66,7 +67,21 @@ class _MainLayoutState extends State<MainLayout> {
   }
 
   Future<void> _initData() async {
+    final prefs = await SharedPreferences.getInstance();
+    final isLoggedIn = prefs.getBool('isLoggedIn') ?? false;
+
+    // Фикс для Web: При обновлении страницы (F5) Supabase нужно время для восстановления сессии.
+    // Если локально мы помним, что вошли, ждем появления currentUser до 2 секунд.
+    if (isLoggedIn && currentUser == null) {
+      for (int i = 0; i < 20; i++) {
+        if (supabase.auth.currentUser != null) break;
+        await Future.delayed(const Duration(milliseconds: 100));
+      }
+    }
+
+    // Если после ожидания пользователя все еще нет - выкидываем на логин
     if (currentUser == null) {
+      await prefs.setBool('isLoggedIn', false); // Очищаем кэш авторизации
       WidgetsBinding.instance.addPostFrameCallback((_) {
         Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const LoginScreen()));
       });
@@ -86,6 +101,13 @@ class _MainLayoutState extends State<MainLayout> {
 
     await _loadPosts(); 
     _setupRealtime();   
+    
+    // Все загрузилось, отключаем экран загрузки
+    if (mounted) {
+      setState(() {
+        _isAppLoading = false;
+      });
+    }
   }
 
   void _setupRealtime() {
@@ -206,7 +228,7 @@ class _MainLayoutState extends State<MainLayout> {
 
     try {
       await supabase.from('comments').insert({
-        'post_id': postId, // UUID передаём как строку
+        'post_id': postId,
         'username': myName,
         'text': commentText,
       });
@@ -604,7 +626,6 @@ class _MainLayoutState extends State<MainLayout> {
     );
   }
 
-  /// Строит ProfileScreen с передачей всех коллбэков
   Widget _buildProfileScreen({String? targetUserId}) {
     return ProfileScreen(
       allPosts: posts,
@@ -619,6 +640,16 @@ class _MainLayoutState extends State<MainLayout> {
 
   @override
   Widget build(BuildContext context) {
+    // Если идет загрузка, показываем индикатор загрузки
+    if (_isAppLoading) {
+      return const Scaffold(
+        backgroundColor: Color(0xFF000000),
+        body: Center(
+          child: CircularProgressIndicator(color: Colors.blueAccent),
+        ),
+      );
+    }
+
     double screenWidth = MediaQuery.of(context).size.width;
     bool isMobile = screenWidth < 900;
 
@@ -664,7 +695,7 @@ class _MainLayoutState extends State<MainLayout> {
                 child: SizedBox(
                   width: isMobile ? screenWidth : 700, 
                   child: _currentIndex == 0 
-                    ? _buildProfileScreen()           // ← свой профиль с коллбэками
+                    ? _buildProfileScreen()           
                     : (_currentIndex == 2 
                         ? const MessagesScreen() 
                         : (_currentIndex == 3 ? _buildSearchScreen() : _buildFeed())),
@@ -775,7 +806,7 @@ class _MainLayoutState extends State<MainLayout> {
                             alignment: Alignment.topCenter,
                             child: SizedBox(
                               width: MediaQuery.of(context).size.width < 900 ? MediaQuery.of(context).size.width : 700,
-                              child: _buildProfileScreen(targetUserId: post.userId), // ← с коллбэками
+                              child: _buildProfileScreen(targetUserId: post.userId), 
                             ),
                           ),
                         ),
@@ -851,7 +882,7 @@ class _MainLayoutState extends State<MainLayout> {
                           alignment: Alignment.topCenter,
                           child: SizedBox(
                             width: MediaQuery.of(context).size.width < 900 ? MediaQuery.of(context).size.width : 700,
-                            child: _buildProfileScreen(targetUserId: post.userId), // ← с коллбэками
+                            child: _buildProfileScreen(targetUserId: post.userId), 
                           ),
                         ),
                       ),
@@ -1352,6 +1383,8 @@ class LeftSidebarContent extends StatelessWidget {
             onTap: () async {
               final prefs = await SharedPreferences.getInstance();
               await prefs.clear();
+              // <-- Добавлено удаление сессии в самом Supabase!
+              await Supabase.instance.client.auth.signOut(); 
               Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const LoginScreen()));
             },
           ),
